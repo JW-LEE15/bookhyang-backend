@@ -1,46 +1,24 @@
 const express = require('express');
-const axios = require('axios');
 const router = express.Router();
+const { searchKakaoBooks } = require('../services/kakaoBook');
 
-// 카카오 도서 검색 API
+// 도서 검색 API 라우트
 router.get('/search', async (req, res) => {
+  const { query } = req.query;
+  console.log(`[도서 검색 요청] 검색어: "${query}"`);
+
   try {
-    const { query } = req.query;
+    const books = await searchKakaoBooks(query);
+    console.log(`[검색 완료] 민음사 필터링 도서 수: ${books.length}권`);
 
-    if (!query) {
-      return res.status(400).json({ success: false, message: '검색어를 입력해 주세요.' });
-    }
-
-    const response = await axios.get('https://dapi.kakao.com/v3/search/book', {
-      params: { query },
-      headers: {
-        Authorization: `KakaoAK ${process.env.KAKAO_REST_API_KEY}`,
-      },
-    });
-
-    // 썸네일 URL을 HTTPS로 안전 변환하여 전달
-    const books = response.data.documents.map((book) => ({
-      title: book.title,
-      authors: book.authors,
-      publisher: book.publisher,
-      isbn: book.isbn,
-      thumbnail: book.thumbnail ? book.thumbnail.replace('http://', 'https://') : '',
-      coverImage: book.thumbnail ? book.thumbnail.replace('http://', 'https://') : '',
-      contents: book.contents,
-      url: book.url,
-    }));
-
-    return res.status(200).json({
-      success: true,
-      data: books,
+    // documents 객체 포맷과 배열 포맷 둘 다 대응 가능하도록 응답
+    return res.json({
+      documents: books,
+      books: books,
     });
   } catch (error) {
-    console.error('카카오 도서 검색 실패:', error.response?.data || error.message);
-    return res.status(500).json({
-      success: false,
-      message: '도서 검색 실패',
-      error: error.message,
-    });
+    console.error('❌ routes/books.js 에러:', error.message);
+    return res.status(500).json({ error: '도서 정보를 가져올 수 없습니다.' });
   }
 });
 
