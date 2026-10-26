@@ -7,6 +7,7 @@ const pool = require('./db');
 
 const booksRouter = require('./routes/books');
 const userBooksRouter = require('./routes/userBooks');
+const authRouter = require('./routes/auth'); // 👈 [추가] 인증 라우터 불러오기
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -17,6 +18,7 @@ app.use(express.json());
 // API 라우터 등록
 app.use('/api/books', booksRouter);
 app.use('/api/user-books', userBooksRouter);
+app.use('/api/auth', authRouter); // 👈 [추가] 인증 API 엔드포인트 연결
 
 // 기본 메인 및 DB 테스트 라우트
 app.get('/', (req, res) => {
