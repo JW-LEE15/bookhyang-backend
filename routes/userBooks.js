@@ -7,8 +7,9 @@ router.get('/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
 
+    // 💡 description (줄거리/소개) 컬럼을 SELECT 항목에 추가
     const query = `
-      SELECT id, user_id, title, author, publisher, isbn, cover_image, status, created_at
+      SELECT id, user_id, title, author, publisher, isbn, cover_image, description, status, created_at
       FROM user_books
       WHERE user_id = $1
       ORDER BY created_at DESC
@@ -45,7 +46,7 @@ router.post('/', async (req, res) => {
     // 1) 제목 파싱
     const title = bookInfo.title || '제목 없음';
 
-    // 2) 저자 파싱 (배열인 경우 문자열로 병합하여 DB 에러 방지)
+    // 2) 저자 파싱
     let parsedAuthor = '저자 미상';
     if (Array.isArray(bookInfo.authors) && bookInfo.authors.length > 0) {
       parsedAuthor = bookInfo.authors.join(', ');
@@ -55,12 +56,19 @@ router.post('/', async (req, res) => {
       parsedAuthor = bookInfo.author;
     }
 
-    // 3) 출판사 및 이미지 파싱 (thumbnail 또는 coverImage 지원)
+    // 3) 출판사 및 이미지 파싱
     const publisher = bookInfo.publisher || '민음사';
     const rawCover = bookInfo.thumbnail || bookInfo.coverImage || bookInfo.cover_url || '';
     const coverImage = typeof rawCover === 'string' ? rawCover.replace('http://', 'https://') : '';
 
-    // 4) ISBN 13자리 추출
+    // 4) 💡 도서 줄거리/소개 파싱 보완 (contents, description, summary 호환)
+    const description =
+      bookInfo.contents ||
+      bookInfo.description ||
+      bookInfo.summary ||
+      '상세 줄거리 정보가 제공되지 않는 도서입니다.';
+
+    // 5) ISBN 13자리 추출
     let isbn = bookInfo.isbn;
     if (isbn && typeof isbn === 'string') {
       if (isbn.includes(' ')) {
@@ -74,7 +82,7 @@ router.post('/', async (req, res) => {
       isbn = '';
     }
 
-    // 5) [중복 검사] 이미 같은 유저가 해당 ISBN 도서를 담았는지 확인
+    // 6) [중복 검사]
     if (isbn) {
       const checkQuery = `
         SELECT id FROM user_books 
@@ -91,10 +99,10 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // 6) DB Insert
+    // 7) 💡 DB Insert (description 컬럼 및 값 추가)
     const insertQuery = `
-      INSERT INTO user_books (user_id, title, author, publisher, isbn, cover_image, status)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      INSERT INTO user_books (user_id, title, author, publisher, isbn, cover_image, description, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       RETURNING *
     `;
 
@@ -105,6 +113,7 @@ router.post('/', async (req, res) => {
       publisher,
       isbn,
       coverImage,
+      description,
       status || 'READING',
     ];
 
@@ -158,7 +167,7 @@ router.delete('/:id', async (req, res) => {
 router.patch('/:id/status', async (req, res) => {
   try {
     const { id } = req.params;
-    const { status } = req.body; // 'WISH', 'READING', 'COMPLETED'
+    const { status } = req.body;
 
     if (!status) {
       return res.status(400).json({
