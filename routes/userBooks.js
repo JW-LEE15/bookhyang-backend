@@ -1,12 +1,24 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
+const requireAuth = require('../middleware/requireAuth');
 
-// 1. 특정 사용자의 서재 도서 목록 조회 (GET /api/user-books/:userId)
-router.get('/:userId', async (req, res) => {
+const NOT_FOUND_MESSAGE = '해당 도서를 찾을 수 없습니다.';
+const PG_INTEGER_MAX = 2147483647; // user_books.id는 integer
+
+// 모든 서재 API는 로그인 토큰이 필요하다. 요청자 id는 req.userId (토큰에서 꺼냄)
+router.use(requireAuth);
+
+// URL의 책 id가 양의 정수(integer 범위)면 숫자로, 아니면 null
+const parseBookId = (raw) => {
+  if (typeof raw !== 'string' || !/^[1-9][0-9]*$/.test(raw)) return null;
+  const id = Number(raw);
+  return id <= PG_INTEGER_MAX ? id : null;
+};
+
+// 1. 내 서재 도서 목록 조회 (GET /api/user-books)
+router.get('/', async (req, res) => {
   try {
-    const { userId } = req.params;
-
     // 💡 description (줄거리/소개) 컬럼을 SELECT 항목에 추가
     const query = `
       SELECT id, user_id, title, author, publisher, isbn, cover_image, description, status, created_at
@@ -15,7 +27,7 @@ router.get('/:userId', async (req, res) => {
       ORDER BY created_at DESC
     `;
 
-    const result = await pool.query(query, [userId]);
+    const result = await pool.query(query, [req.userId]);
 
     return res.status(200).json({
       success: true,
@@ -26,7 +38,6 @@ router.get('/:userId', async (req, res) => {
     return res.status(500).json({
       success: false,
       message: '서재 목록 조회 실패',
-      error: error.message,
     });
   }
 });
@@ -34,12 +45,13 @@ router.get('/:userId', async (req, res) => {
 // 2. 내 서재에 도서 추가 (POST /api/user-books) - 중복 체크 및 데이터 파싱 포함
 router.post('/', async (req, res) => {
   try {
-    const { userId, bookInfo, status } = req.body;
+    const userId = req.userId; // body의 userId는 쓰지 않는다
+    const { bookInfo, status } = req.body || {};
 
-    if (!userId || !bookInfo) {
+    if (!bookInfo) {
       return res.status(400).json({
         success: false,
-        message: '유저 ID와 도서 정보는 필수입니다.',
+        message: '도서 정보는 필수입니다.',
       });
     }
 
@@ -85,7 +97,7 @@ router.post('/', async (req, res) => {
     // 6) [중복 검사]
     if (isbn) {
       const checkQuery = `
-        SELECT id FROM user_books 
+        SELECT id FROM user_books
         WHERE user_id = $1 AND isbn = $2
       `;
       const checkResult = await pool.query(checkQuery, [userId, isbn]);
@@ -129,23 +141,25 @@ router.post('/', async (req, res) => {
     return res.status(500).json({
       success: false,
       message: '서재 추가 중 오류가 발생했습니다.',
-      error: error.message,
     });
   }
 });
 
-// 3. 내 서재 도서 삭제 (DELETE /api/user-books/:id)
+// 3. 내 서재 도서 삭제 (DELETE /api/user-books/:id) - 본인 책만. 남의 책·없는 책은 똑같이 404
 router.delete('/:id', async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = parseBookId(req.params.id);
+    if (id === null) {
+      return res.status(404).json({ success: false, message: NOT_FOUND_MESSAGE });
+    }
 
-    const deleteQuery = `DELETE FROM user_books WHERE id = $1 RETURNING *`;
-    const result = await pool.query(deleteQuery, [id]);
+    const deleteQuery = `DELETE FROM user_books WHERE id = $1 AND user_id = $2 RETURNING id`;
+    const result = await pool.query(deleteQuery, [id, req.userId]);
 
     if (result.rowCount === 0) {
       return res.status(404).json({
         success: false,
-        message: '해당 도서를 찾을 수 없습니다.',
+        message: NOT_FOUND_MESSAGE,
       });
     }
 
@@ -158,16 +172,19 @@ router.delete('/:id', async (req, res) => {
     return res.status(500).json({
       success: false,
       message: '도서 삭제 중 오류가 발생했습니다.',
-      error: error.message,
     });
   }
 });
 
-// 4. 내 서재 도서 독서 상태 변경 (PATCH /api/user-books/:id/status)
+// 4. 내 서재 도서 독서 상태 변경 (PATCH /api/user-books/:id/status) - 본인 책만. 남의 책·없는 책은 똑같이 404
 router.patch('/:id/status', async (req, res) => {
   try {
-    const { id } = req.params;
-    const { status } = req.body;
+    const id = parseBookId(req.params.id);
+    if (id === null) {
+      return res.status(404).json({ success: false, message: NOT_FOUND_MESSAGE });
+    }
+
+    const { status } = req.body || {};
 
     if (!status) {
       return res.status(400).json({
@@ -177,17 +194,17 @@ router.patch('/:id/status', async (req, res) => {
     }
 
     const updateQuery = `
-      UPDATE user_books 
-      SET status = $1 
-      WHERE id = $2 
+      UPDATE user_books
+      SET status = $1
+      WHERE id = $2 AND user_id = $3
       RETURNING *
     `;
-    const result = await pool.query(updateQuery, [status, id]);
+    const result = await pool.query(updateQuery, [status, id, req.userId]);
 
     if (result.rowCount === 0) {
       return res.status(404).json({
         success: false,
-        message: '해당 도서를 찾을 수 없습니다.',
+        message: NOT_FOUND_MESSAGE,
       });
     }
 
@@ -201,7 +218,6 @@ router.patch('/:id/status', async (req, res) => {
     return res.status(500).json({
       success: false,
       message: '독서 상태 변경 중 오류가 발생했습니다.',
-      error: error.message,
     });
   }
 });

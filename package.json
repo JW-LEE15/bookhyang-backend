@@ -19,6 +19,7 @@
     "dotenv": "^17.4.2",
     "es-hangul": "^2.4.0",
     "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
     "pg": "^8.23.0"
   },
   "devDependencies": {

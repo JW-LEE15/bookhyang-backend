@@ -4,6 +4,7 @@ const pool = require('../db');
 const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 const { validateSignup, validateLogin } = require('../validators/authValidator');
+const { signToken } = require('../config/auth');
 
 const SALT_ROUNDS = 10;
 const LOGIN_FAIL_MESSAGE = '이메일 또는 비밀번호가 일치하지 않습니다.';
@@ -61,7 +62,6 @@ router.post('/signup', async (req, res) => {
     return res.status(500).json({
       success: false,
       message: '회원가입 처리 중 오류가 발생했습니다.',
-      error: error.message,
     });
   }
 });
@@ -103,17 +103,20 @@ router.post('/login', async (req, res) => {
     // 비밀번호 정보 제외 후 응답
     delete user.password;
 
+    // 서재 API에 쓸 로그인 토큰 (만료 7일)
+    const token = signToken(user.id);
+
     return res.status(200).json({
       success: true,
       message: '로그인에 성공했습니다.',
       user,
+      token,
     });
   } catch (error) {
     console.error('로그인 에러:', error);
     return res.status(500).json({
       success: false,
       message: '로그인 처리 중 오류가 발생했습니다.',
-      error: error.message,
     });
   }
 });
