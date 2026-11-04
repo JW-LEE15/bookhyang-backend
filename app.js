@@ -3,7 +3,15 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const pool = require('./db');
+const { assertJwtSecret } = require('./config/auth');
+
+// JWT_SECRET이 없거나 32자 미만이면 서버를 시작하지 않는다
+try {
+  assertJwtSecret();
+} catch (error) {
+  console.error('❌ 서버 시작 중단:', error.message);
+  process.exit(1);
+}
 
 // API 라우터 불러오기
 const booksRouter = require('./routes/books');
@@ -28,27 +36,9 @@ app.use('/api/books', booksRouter);
 app.use('/api/user-books', userBooksRouter);
 app.use('/api/auth', authRouter); // 인증 API 엔드포인트 연결 (/api/auth/signup, /api/auth/login)
 
-// 기본 메인 및 DB 테스트 라우트
+// 기본 메인 라우트
 app.get('/', (req, res) => {
   res.send('📖 민음사 아카이브(bookhyang) 백엔드 API 서버가 정상 실행 중입니다.');
-});
-
-app.get('/api/db-test', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT NOW()');
-    res.status(200).json({ 
-      success: true, 
-      message: 'Supabase DB 연동 성공!', 
-      dbTime: result.rows[0].now 
-    });
-  } catch (error) {
-    console.error('DB 연동 테스트 에러:', error.message);
-    res.status(500).json({ 
-      success: false, 
-      message: 'DB 연동 실패', 
-      error: error.message 
-    });
-  }
 });
 
 // 404 라우트 처리 미들웨어
@@ -65,7 +55,6 @@ app.use((err, req, res, next) => {
   res.status(500).json({
     success: false,
     message: '서버 내부 오류가 발생했습니다.',
-    error: err.message,
   });
 });
 
