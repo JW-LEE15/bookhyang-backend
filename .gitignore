@@ -2,3 +2,7 @@ node_modules/
 .env
 .env.local
 *.log
+
+# 카카오 수집 결과 (기본 출력은 레포 밖 bookhyang-data/kakao/). 레포 안에 출력했을 때를 대비한 보조 설정
+/data/
+/scripts/output/
