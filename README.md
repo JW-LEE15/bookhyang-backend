@@ -15,7 +15,7 @@
 - `routes/userBooks.js`: 사용자 서재 도서 CRUD API 라우터
 - `services/kakaoBook.js`: 카카오 도서 검색 API 연동 서비스
 - `app.js`: Express 서버 메인 엔트리포인트
-- `db.js`: Supabase DB 클라이언트 연결 설정
+- `db.js`: PostgreSQL(Supabase)에 `pg`로 직접 연결하는 설정
 
 ---
 
@@ -31,7 +31,7 @@
 
 ## ⚙️ 실행 방법 (Getting Started)
 
-1. 환경변수 설정: `.env.example` 파일을 복사하여 `.env` 파일을 생성하고 필요한 API Key 및 Supabase 설정값을 입력합니다.
+1. 환경변수 설정: `.env.example` 파일을 복사하여 `.env` 파일을 생성하고 `DATABASE_URL`, `JWT_SECRET`, `KAKAO_API_KEY` 등 필요한 값을 입력합니다.
 2. 의존성 설치 및 실행:
 ```bash
 npm install
