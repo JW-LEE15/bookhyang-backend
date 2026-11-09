@@ -17,6 +17,7 @@ try {
 const booksRouter = require('./routes/books');
 const userBooksRouter = require('./routes/userBooks');
 const authRouter = require('./routes/auth'); // 인증 라우터 (회원가입, 로그인)
+const commentsRouter = require('./routes/comments'); // 책별 댓글 (조회 공개, 작성·삭제 인증)
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -35,6 +36,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/api/books', booksRouter);
 app.use('/api/user-books', userBooksRouter);
 app.use('/api/auth', authRouter); // 인증 API 엔드포인트 연결 (/api/auth/signup, /api/auth/login)
+app.use('/api/comments', commentsRouter);
 
 // 기본 메인 라우트
 app.get('/', (req, res) => {
