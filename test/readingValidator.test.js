@@ -2,7 +2,46 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { todayKst } = require('../services/kstDate');
-const { STATUSES, parseUserBookId, normalizeStatus, validateReadEndDate } = require('../validators/readingValidator');
+const {
+  STATUSES,
+  NOTE_MAX_LENGTH,
+  parseUserBookId,
+  normalizeStatus,
+  validateReadEndDate,
+  validateNoteContent,
+} = require('../validators/readingValidator');
+
+test('메모: 정상 값은 trim해서 돌려주고 내부 줄바꿈은 유지', () => {
+  assert.deepEqual(validateNoteContent({ content: '  좋은 책\n둘째 줄  ' }), {
+    ok: true,
+    value: { content: '좋은 책\n둘째 줄' },
+  });
+  assert.equal(validateNoteContent({ content: '가' }).ok, true);
+});
+
+test('메모: 1~2000자 (코드포인트 기준)', () => {
+  assert.equal(NOTE_MAX_LENGTH, 2000);
+  assert.equal(validateNoteContent({ content: '가'.repeat(2000) }).ok, true);
+  assert.equal(validateNoteContent({ content: '가'.repeat(2001) }).ok, false);
+  assert.equal(validateNoteContent({ content: '😀'.repeat(2000) }).ok, true); // 이모지는 1글자
+  assert.equal(validateNoteContent({ content: '😀'.repeat(2001) }).ok, false);
+  assert.equal(validateNoteContent({ content: `  ${'가'.repeat(2000)}  ` }).ok, true); // trim 후 길이
+});
+
+test('메모: 비었거나 공백뿐이거나 문자열이 아니면 거부', () => {
+  const bads = ['', ' ', '   ', '\n\t ', null, undefined, 123, true, ['메모'], { a: 1 }];
+  for (const bad of bads) {
+    assert.equal(validateNoteContent({ content: bad }).ok, false, `입력: ${JSON.stringify(bad)}`);
+  }
+  assert.equal(validateNoteContent({}).ok, false);
+  assert.equal(validateNoteContent(undefined).ok, false);
+  assert.equal(validateNoteContent(null).ok, false);
+});
+
+test('메모: NUL 문자는 거부 (Postgres text에 저장 불가)', () => {
+  assert.equal(validateNoteContent({ content: 'a\u0000b' }).ok, false);
+  assert.equal(validateNoteContent({ content: '\u0000' }).ok, false);
+});
 
 test('status 허용 목록', () => {
   assert.deepEqual(STATUSES, ['READING', 'COMPLETED', 'WISH']);
