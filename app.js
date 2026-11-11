@@ -27,6 +27,7 @@ try {
 // API 라우터 불러오기
 const booksRouter = require('./routes/books');
 const userBooksRouter = require('./routes/userBooks');
+const readingRecordsRouter = require('./routes/readingRecords'); // 독서 기록 (완독일 수정)
 const authRouter = require('./routes/auth'); // 인증 라우터 (회원가입, 로그인)
 const commentsRouter = require('./routes/comments'); // 책별 댓글 (조회 공개, 작성·삭제 인증)
 const aiRouter = require('./routes/ai'); // AI 추천 (로그인 필요)
@@ -53,6 +54,7 @@ app.use(express.urlencoded({ extended: true }));
 // API 라우터 등록
 app.use('/api/books', booksRouter);
 app.use('/api/user-books', userBooksRouter);
+app.use('/api/user-books', readingRecordsRouter);
 app.use('/api/auth', authRouter); // 인증 API 엔드포인트 연결 (/api/auth/signup, /api/auth/login)
 app.use('/api/comments', commentsRouter);
 app.use('/api/ai', aiRouter);
