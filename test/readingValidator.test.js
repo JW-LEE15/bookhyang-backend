@@ -116,3 +116,55 @@ test('완독일: 없는 날짜와 형식 오류는 거부', () => {
   assert.equal(validateReadEndDate({}, NOW).ok, false);
   assert.equal(validateReadEndDate(undefined, NOW).ok, false);
 });
+
+// ---- 요약 쿼리, 기간, 이번 달 범위 ----
+const { monthRangeKst } = require('../services/kstDate');
+const { validateSummaryQuery, validatePeriod, PERIOD_LIMIT_MAX } = require('../validators/readingValidator');
+
+test('monthRangeKst: 한국 날짜 기준 이번 달 [from, to)', () => {
+  assert.deepEqual(monthRangeKst(NOW), { month: '2026-11', from: '2026-11-01', to: '2026-12-01' });
+  assert.deepEqual(monthRangeKst(new Date('2026-12-15T00:00:00Z')), { month: '2026-12', from: '2026-12-01', to: '2027-01-01' });
+  assert.deepEqual(monthRangeKst(new Date('2026-01-31T03:00:00Z')), { month: '2026-01', from: '2026-01-01', to: '2026-02-01' });
+});
+
+test('monthRangeKst: 달 경계는 UTC가 아니라 한국 시간으로 넘어간다', () => {
+  // UTC 11-30 14:59 = 한국 11-30 23:59 (아직 11월), UTC 11-30 15:00 = 한국 12-01 00:00
+  assert.equal(monthRangeKst(new Date('2026-11-30T14:59:59Z')).month, '2026-11');
+  assert.equal(monthRangeKst(new Date('2026-11-30T15:00:00Z')).month, '2026-12');
+  assert.equal(monthRangeKst(new Date('2026-12-31T15:00:00Z')).month, '2027-01');
+});
+
+test('validateSummaryQuery: recent 기본 5, 1~10만 허용', () => {
+  assert.deepEqual(validateSummaryQuery({}), { ok: true, value: { recent: 5 } });
+  assert.deepEqual(validateSummaryQuery(undefined), { ok: true, value: { recent: 5 } });
+  assert.equal(validateSummaryQuery({ recent: '1' }).value.recent, 1);
+  assert.equal(validateSummaryQuery({ recent: '10' }).value.recent, 10);
+  for (const bad of ['0', '11', '99', '-1', '1.5', 'abc', '', ' 3', '03', ['3', '4'], 3]) {
+    assert.equal(validateSummaryQuery({ recent: bad }).ok, false, `입력: ${JSON.stringify(bad)}`);
+  }
+});
+
+test('validatePeriod: [from, to) 날짜와 limit', () => {
+  assert.deepEqual(validatePeriod({ from: '2026-11-01', to: '2026-12-01' }), {
+    ok: true,
+    value: { from: '2026-11-01', to: '2026-12-01', limit: 50 },
+  });
+  assert.equal(validatePeriod({ from: '2026-11-01', to: '2026-12-01', limit: 10 }).value.limit, 10);
+  assert.equal(PERIOD_LIMIT_MAX, 200);
+  assert.equal(validatePeriod({ from: '2026-11-01', to: '2026-12-01', limit: 200 }).value.limit, 200);
+  assert.equal(validatePeriod({ from: '2026-11-01', to: '2026-12-01', limit: 5000 }).value.limit, 200); // 줄여서 받는다
+});
+
+test('validatePeriod: 잘못된 기간과 limit은 거부', () => {
+  const ok = { from: '2026-11-01', to: '2026-12-01' };
+  assert.equal(validatePeriod({ from: '2026-12-01', to: '2026-11-01' }).ok, false); // 거꾸로
+  assert.equal(validatePeriod({ from: '2026-11-01', to: '2026-11-01' }).ok, false); // 빈 구간
+  for (const bad of ['2026-02-30', '2026/11/01', '', null, undefined, 20261101]) {
+    assert.equal(validatePeriod({ ...ok, from: bad }).ok, false, `from: ${JSON.stringify(bad)}`);
+    assert.equal(validatePeriod({ ...ok, to: bad }).ok, false, `to: ${JSON.stringify(bad)}`);
+  }
+  for (const bad of [0, -1, 1.5, '10', null, NaN]) {
+    assert.equal(validatePeriod({ ...ok, limit: bad }).ok, false, `limit: ${JSON.stringify(bad)}`);
+  }
+  assert.equal(validatePeriod().ok, false);
+});
