@@ -1,5 +1,9 @@
-// services/comments.js: 댓글 응답 조립과 AI 요약 입력 조립 (PR1: 순수 함수만. DB 함수는 PR2·PR3에서 이 파일에 추가)
+// services/comments.js: 댓글 응답 조립, 댓글 DB 로직, AI 요약 입력 조립
+//  - 순수 함수: maskComment, buildSummaryInput
+//  - DB 함수(pool을 첫 인자로 받는다): listComments, listReplies, createComment, setHidden, deleteComment
+//  - AI 요약용 DB 조회(listCommentsForSummary)는 PR3에서 추가한다
 // 이 파일에는 로그 출력이 없다. 댓글 원문을 로그에 남기지 않는다.
+// 모든 쓰기 쿼리에 user_id 조건을 넣어 소유자를 확인한다. 남의 댓글과 없는 댓글은 똑같이 not_found로 돌려준다.
 
 const HIDDEN_PLACEHOLDER = '숨겨진 댓글입니다.';
 const DELETED_PLACEHOLDER = '삭제된 댓글입니다.';
@@ -117,10 +121,223 @@ const buildSummaryInput = (rootRows, replyRows, { max = SUMMARY_MAX_COMMENTS } =
   };
 };
 
+// ---- DB 함수 ----
+
+// 응답에 쓰는 컬럼. 순서와 이름은 maskComment가 읽는 행 모양과 같다.
+const COMMENT_COLUMNS = `c.id, c.isbn, c.user_id, c.content, c.created_at, u.nickname,
+       c.parent_id, c.is_spoiler, c.is_hidden, c.deleted_at`;
+// 삭제되지 않은 답글 수 (숨김 포함). 원댓글에서만 의미가 있다.
+const REPLY_COUNT_SQL = '(SELECT COUNT(*) FROM comments r WHERE r.parent_id = c.id)';
+// 목록에 보여 줄 원댓글: 삭제 표시는 답글이 남아 있을 때만 보인다 (빈 껍데기는 숨긴다)
+const VISIBLE_ROOT_SQL = `c.parent_id IS NULL
+         AND (c.deleted_at IS NULL OR EXISTS (SELECT 1 FROM comments r WHERE r.parent_id = c.id))`;
+
+const toComments = (rows, viewerId) => rows.map((row) => maskComment(row, viewerId));
+
+// 책별 원댓글 목록 (최신순, id 커서). 숨김·삭제 표시는 viewerId 기준으로 마스킹한다.
+// total: 삭제되지 않은 원댓글+답글 전체 수(숨김 포함), topLevelTotal: 목록에 나오는 원댓글 수
+// 반환: { data, total, topLevelTotal, nextCursor }
+const listComments = async (pool, { isbn, limit, before = null, viewerId = null }) => {
+  const listQuery = `
+    SELECT ${COMMENT_COLUMNS}, ${REPLY_COUNT_SQL} AS reply_count
+      FROM comments c
+      JOIN users u ON u.id = c.user_id
+     WHERE c.isbn = $1 AND ${VISIBLE_ROOT_SQL}
+       AND ($2::bigint IS NULL OR c.id < $2::bigint)
+     ORDER BY c.id DESC
+     LIMIT $3`;
+  const countQuery = `
+    SELECT COUNT(*) FILTER (WHERE c.deleted_at IS NULL) AS total,
+           COUNT(*) FILTER (WHERE ${VISIBLE_ROOT_SQL}) AS top_level_total
+      FROM comments c
+     WHERE c.isbn = $1`;
+
+  // 다음 페이지가 있는지 알기 위해 1개 더 가져온다
+  const [listResult, countResult] = await Promise.all([
+    pool.query(listQuery, [isbn, before, limit + 1]),
+    pool.query(countQuery, [isbn]),
+  ]);
+
+  const hasMore = listResult.rows.length > limit;
+  const rows = hasMore ? listResult.rows.slice(0, limit) : listResult.rows;
+  const data = toComments(rows, viewerId);
+  const counts = countResult.rows[0] || {};
+
+  return {
+    data,
+    total: toCount(counts.total),
+    topLevelTotal: toCount(counts.top_level_total),
+    nextCursor: hasMore ? data[data.length - 1].id : null,
+  };
+};
+
+// 원댓글 하나의 답글 목록 (오래된 순, id > after 커서). 삭제 표시된 원댓글의 답글도 볼 수 있다.
+// 반환: { result: 'ok', data, total, nextCursor } | { result: 'not_found' } (없는 댓글이거나 원댓글이 아님)
+const listReplies = async (pool, { id, limit, after = null, viewerId = null }) => {
+  const parent = await pool.query('SELECT 1 FROM comments WHERE id = $1 AND parent_id IS NULL', [id]);
+  if (parent.rowCount === 0) return { result: 'not_found' };
+
+  const listQuery = `
+    SELECT ${COMMENT_COLUMNS}, 0 AS reply_count
+      FROM comments c
+      JOIN users u ON u.id = c.user_id
+     WHERE c.parent_id = $1 AND ($2::bigint IS NULL OR c.id > $2::bigint)
+     ORDER BY c.id ASC
+     LIMIT $3`;
+  const countQuery = 'SELECT COUNT(*) AS total FROM comments WHERE parent_id = $1';
+
+  const [listResult, countResult] = await Promise.all([
+    pool.query(listQuery, [id, after, limit + 1]),
+    pool.query(countQuery, [id]),
+  ]);
+
+  const hasMore = listResult.rows.length > limit;
+  const rows = hasMore ? listResult.rows.slice(0, limit) : listResult.rows;
+  const data = toComments(rows, viewerId);
+
+  return {
+    result: 'ok',
+    data,
+    total: toCount(countResult.rows[0] && countResult.rows[0].total),
+    nextCursor: hasMore ? data[data.length - 1].id : null,
+  };
+};
+
+// 작성 직후 응답용 SELECT (닉네임을 붙인다)
+const RETURNING_COLUMNS = 'id, isbn, user_id, content, created_at, parent_id, is_spoiler, is_hidden, deleted_at';
+const JOIN_NICKNAME_SQL = `SELECT i.*, u.nickname, 0 AS reply_count
+        FROM inserted i
+        JOIN users u ON u.id = i.user_id`;
+
+// 댓글 또는 답글을 작성한다. 작성자는 항상 userId다.
+// 답글은 부모가 유효할 때만 한 번의 INSERT ... SELECT로 들어간다. (확인과 쓰기 사이에 끼어들 틈이 없다)
+//   유효한 부모: 같은 책의 원댓글이고, 삭제되지 않았고, 숨김이 아님
+// 반환: { result: 'ok', data }
+//     | { result: 'parent_not_found' | 'reply_to_reply' | 'isbn_mismatch' | 'parent_hidden' }
+const createComment = async (pool, { userId, isbn, content, parentId = null, isSpoiler = false }) => {
+  if (parentId === null) {
+    const inserted = await pool.query(
+      `WITH inserted AS (
+         INSERT INTO comments (isbn, user_id, content, is_spoiler)
+         VALUES ($1, $2, $3, $4::boolean)
+         RETURNING ${RETURNING_COLUMNS}
+       )
+       ${JOIN_NICKNAME_SQL}`,
+      [isbn, userId, content, isSpoiler]
+    );
+    return { result: 'ok', data: maskComment(inserted.rows[0], userId) };
+  }
+
+  let inserted;
+  try {
+    inserted = await pool.query(
+      `WITH inserted AS (
+         INSERT INTO comments (isbn, user_id, content, parent_id, is_spoiler)
+         SELECT $1::char(13), $2::uuid, $3::text, p.id, $5::boolean
+           FROM comments p
+          WHERE p.id = $4::bigint AND p.parent_id IS NULL AND p.isbn = $1::char(13)
+            AND p.deleted_at IS NULL AND NOT p.is_hidden
+         RETURNING ${RETURNING_COLUMNS}
+       )
+       ${JOIN_NICKNAME_SQL}`,
+      [isbn, userId, content, parentId, isSpoiler]
+    );
+  } catch (error) {
+    // 확인과 쓰기 사이에 부모가 지워진 경우(FK)와 DB 트리거가 막은 경우를 같은 결과로 바꾼다
+    const mapped = mapReplyInsertError(error);
+    if (mapped) return { result: mapped };
+    throw error;
+  }
+
+  if (inserted.rowCount > 0) {
+    return { result: 'ok', data: maskComment(inserted.rows[0], userId) };
+  }
+
+  // 0행: 부모가 왜 안 되는지 구분한다. 우선순위: 없음·삭제 > 답글에 답글 > 다른 책 > 숨김
+  const found = await pool.query(
+    'SELECT isbn, parent_id, is_hidden, deleted_at FROM comments WHERE id = $1',
+    [parentId]
+  );
+  const parent = found.rows[0];
+  if (!parent || parent.deleted_at) return { result: 'parent_not_found' };
+  if (parent.parent_id !== null) return { result: 'reply_to_reply' };
+  if (parent.isbn !== isbn) return { result: 'isbn_mismatch' };
+  if (parent.is_hidden) return { result: 'parent_hidden' };
+  return { result: 'parent_not_found' }; // 그 사이에 상태가 바뀐 경우
+};
+
+// 답글 INSERT 오류를 결과 이름으로 바꾼다. 바꿀 수 없으면 null (호출한 쪽이 그대로 던진다)
+// 메시지는 20261112_comments_extend.sql 트리거가 직접 정한 고정 문자열이라 비교해도 안전하다.
+const mapReplyInsertError = (error) => {
+  if (!error) return null;
+  if (error.code === '23503') return 'parent_not_found';
+  if (error.code === '23514' && error.message === 'reply_to_reply') return 'reply_to_reply';
+  if (error.code === '23514' && error.message === 'reply_isbn_mismatch') return 'isbn_mismatch';
+  return null;
+};
+
+// 내 댓글을 숨기거나 숨김을 해제한다. 이미 같은 상태여도 ok (멱등).
+// 반환: { result: 'ok', data } | { result: 'not_found' } (없음, 남의 댓글, 삭제 표시된 댓글 모두 같음)
+const setHidden = async (pool, { userId, id, isHidden }) => {
+  const updated = await pool.query(
+    `WITH updated AS (
+       UPDATE comments SET is_hidden = $3::boolean
+        WHERE id = $1::bigint AND user_id = $2::uuid AND deleted_at IS NULL
+        RETURNING ${RETURNING_COLUMNS}
+     )
+     SELECT i.*, u.nickname,
+            (SELECT COUNT(*) FROM comments r WHERE r.parent_id = i.id) AS reply_count
+       FROM updated i
+       JOIN users u ON u.id = i.user_id`,
+    [id, userId, isHidden]
+  );
+  if (updated.rowCount === 0) return { result: 'not_found' };
+  return { result: 'ok', data: maskComment(updated.rows[0], userId) };
+};
+
+// 내 댓글을 삭제한다. (혼합형)
+//  - 답글이 달린 원댓글: 행을 남기고 deleted_at을 채우고 내용을 비운다 -> mode 'marked'
+//  - 그 밖의 댓글(답글 포함): 실제로 지운다 -> mode 'removed'
+// 한 문장에서 판정과 실행을 같이 한다. 남의 댓글, 없는 댓글, 이미 삭제 표시된 댓글은 똑같이 not_found.
+// 반환: { result: 'ok', mode } | { result: 'not_found' }
+const deleteComment = async (pool, { userId, id }) => {
+  const done = await pool.query(
+    `WITH target AS (
+       SELECT c.id, EXISTS (SELECT 1 FROM comments r WHERE r.parent_id = c.id) AS has_replies
+         FROM comments c
+        WHERE c.id = $1::bigint AND c.user_id = $2::uuid AND c.deleted_at IS NULL
+     ),
+     marked AS (
+       UPDATE comments c
+          SET deleted_at = now(), content = '', is_hidden = false, is_spoiler = false
+         FROM target t
+        WHERE c.id = t.id AND t.has_replies
+        RETURNING c.id
+     ),
+     removed AS (
+       DELETE FROM comments c
+        USING target t
+        WHERE c.id = t.id AND NOT t.has_replies
+        RETURNING c.id
+     )
+     SELECT (SELECT COUNT(*) FROM marked) AS marked, (SELECT COUNT(*) FROM removed) AS removed`,
+    [id, userId]
+  );
+  const row = done.rows[0] || {};
+  if (toCount(row.marked) > 0) return { result: 'ok', mode: 'marked' };
+  if (toCount(row.removed) > 0) return { result: 'ok', mode: 'removed' };
+  return { result: 'not_found' };
+};
+
 module.exports = {
   HIDDEN_PLACEHOLDER,
   DELETED_PLACEHOLDER,
   SUMMARY_MAX_COMMENTS,
   maskComment,
   buildSummaryInput,
+  listComments,
+  listReplies,
+  createComment,
+  setHidden,
+  deleteComment,
 };
