@@ -4,10 +4,21 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { assertJwtSecret } = require('./config/auth');
+const { parseTrustProxyHops } = require('./config/trustProxy');
 
 // JWT_SECRET이 없거나 32자 미만이면 서버를 시작하지 않는다
 try {
   assertJwtSecret();
+} catch (error) {
+  console.error('❌ 서버 시작 중단:', error.message);
+  process.exit(1);
+}
+
+// TRUST_PROXY_HOPS: 앞단 프록시(Render 등)가 몇 단계인지. 값이 잘못되면 서버를 시작하지 않는다.
+// 비어 있으면 trust proxy를 설정하지 않는다. (로컬 개발)
+let trustProxyHops = null;
+try {
+  trustProxyHops = parseTrustProxyHops(process.env.TRUST_PROXY_HOPS);
 } catch (error) {
   console.error('❌ 서버 시작 중단:', error.message);
   process.exit(1);
@@ -21,6 +32,12 @@ const commentsRouter = require('./routes/comments'); // 책별 댓글 (조회 �
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// IP 기준 횟수 제한이 실제 사용자 IP를 보도록 프록시 단계 수를 알려 준다. (IP 값은 로그에 남기지 않는다)
+if (trustProxyHops !== null) {
+  app.set('trust proxy', trustProxyHops);
+  console.log(`trust proxy: ${trustProxyHops}단계`);
+}
 
 // 미들웨어 설정
 app.use(cors({
