@@ -20,6 +20,33 @@ const isRealCalendarDate = (year, month, day) => {
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 };
 
+const NOTE_MIN_LENGTH = 1;
+const NOTE_MAX_LENGTH = 2000;
+
+// 글자 수 (한글·이모지도 1글자로 센다. DB의 char_length와 같은 기준)
+const charLength = (str) => [...str].length;
+
+// 메모 내용 검증. 통과하면 { ok: true, value: { content } } (content는 trim한 값, 내부 줄바꿈은 유지)
+// \u0000은 Postgres text에 저장할 수 없어서(500이 되므로) 거부한다.
+const validateNoteContent = (body) => {
+  const raw = body && body.content;
+  if (typeof raw !== 'string') {
+    return fail('메모 내용을 입력해 주세요.');
+  }
+  if (raw.includes('\u0000')) {
+    return fail('메모에 사용할 수 없는 문자가 있습니다.');
+  }
+  const trimmed = raw.trim();
+  const length = charLength(trimmed);
+  if (length < NOTE_MIN_LENGTH) {
+    return fail('메모 내용을 입력해 주세요.');
+  }
+  if (length > NOTE_MAX_LENGTH) {
+    return fail(`메모는 ${NOTE_MAX_LENGTH}자 이하로 입력해 주세요.`);
+  }
+  return { ok: true, value: { content: trimmed } };
+};
+
 const STATUSES = ['READING', 'COMPLETED', 'WISH'];
 const STATUS_ERROR_MESSAGE = '독서 상태는 READING, COMPLETED, WISH 중 하나여야 합니다.';
 
@@ -54,4 +81,11 @@ const validateReadEndDate = (body, now = new Date()) => {
   return { ok: true, value: { readEndDate: raw } };
 };
 
-module.exports = { STATUSES, parseUserBookId, normalizeStatus, validateReadEndDate };
+module.exports = {
+  STATUSES,
+  NOTE_MAX_LENGTH,
+  parseUserBookId,
+  normalizeStatus,
+  validateReadEndDate,
+  validateNoteContent,
+};
