@@ -47,6 +47,51 @@ const validateNoteContent = (body) => {
   return { ok: true, value: { content: trimmed } };
 };
 
+const SUMMARY_RECENT_DEFAULT = 5;
+const SUMMARY_RECENT_MAX = 10;
+const PERIOD_LIMIT_DEFAULT = 50;
+const PERIOD_LIMIT_MAX = 200;
+const POSITIVE_INTEGER_PATTERN = /^[1-9][0-9]*$/;
+
+// 'YYYY-MM-DD' 형식이고 실제 달력에 있는 날짜(1900년 이후)인지. 미래 날짜 여부는 보지 않는다.
+const isValidDateString = (raw) => {
+  const match = typeof raw === 'string' ? DATE_PATTERN.exec(raw) : null;
+  if (!match) return false;
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  return year >= MIN_YEAR && isRealCalendarDate(year, month, day);
+};
+
+// 독서 기록 요약 조회 쿼리(recent) 검증. 통과하면 { ok: true, value: { recent } }
+// recent는 1~10의 정수이고 없으면 5. 범위를 벗어나면 줄이지 않고 거부한다.
+const validateSummaryQuery = (query) => {
+  const raw = query && query.recent;
+  if (raw === undefined) return { ok: true, value: { recent: SUMMARY_RECENT_DEFAULT } };
+  if (typeof raw !== 'string' || !POSITIVE_INTEGER_PATTERN.test(raw) || Number(raw) > SUMMARY_RECENT_MAX) {
+    return fail(`recent는 1 이상 ${SUMMARY_RECENT_MAX} 이하의 정수여야 합니다.`);
+  }
+  return { ok: true, value: { recent: Number(raw) } };
+};
+
+// 기간별 조회(AI 리포트용) 인자 검증. 기간은 [from, to) 반개구간이고 YYYY-MM-DD(한국 날짜)이다.
+// limit은 없으면 50, 양의 정수만 허용하고 200을 넘으면 200으로 줄인다.
+// 통과하면 { ok: true, value: { from, to, limit } }
+const validatePeriod = ({ from, to, limit } = {}) => {
+  if (!isValidDateString(from) || !isValidDateString(to)) {
+    return fail('기간은 YYYY-MM-DD 형식의 실제 날짜여야 합니다.');
+  }
+  if (from >= to) {
+    return fail('기간의 시작일은 종료일보다 앞이어야 합니다.');
+  }
+  let parsedLimit = PERIOD_LIMIT_DEFAULT;
+  if (limit !== undefined) {
+    if (!Number.isInteger(limit) || limit < 1) {
+      return fail('limit은 1 이상의 정수여야 합니다.');
+    }
+    parsedLimit = Math.min(limit, PERIOD_LIMIT_MAX);
+  }
+  return { ok: true, value: { from, to, limit: parsedLimit } };
+};
+
 const STATUSES = ['READING', 'COMPLETED', 'WISH'];
 const STATUS_ERROR_MESSAGE = '독서 상태는 READING, COMPLETED, WISH 중 하나여야 합니다.';
 
@@ -84,6 +129,12 @@ const validateReadEndDate = (body, now = new Date()) => {
 module.exports = {
   STATUSES,
   NOTE_MAX_LENGTH,
+  SUMMARY_RECENT_DEFAULT,
+  SUMMARY_RECENT_MAX,
+  PERIOD_LIMIT_DEFAULT,
+  PERIOD_LIMIT_MAX,
+  validateSummaryQuery,
+  validatePeriod,
   parseUserBookId,
   normalizeStatus,
   validateReadEndDate,
