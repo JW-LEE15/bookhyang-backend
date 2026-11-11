@@ -1,9 +1,10 @@
 // services/comments.js: 댓글 응답 조립, 댓글 DB 로직, AI 요약 입력 조립
 //  - 순수 함수: maskComment, buildSummaryInput
-//  - DB 함수(pool을 첫 인자로 받는다): listComments, listReplies, createComment, setHidden, deleteComment
-//  - AI 요약용 DB 조회(listCommentsForSummary)는 PR3에서 추가한다
+//  - DB 함수(pool을 첫 인자로 받는다): listComments, listReplies, createComment, setHidden, deleteComment,
+//    listCommentsForSummary (AI 요약 입력용 조회)
 // 이 파일에는 로그 출력이 없다. 댓글 원문을 로그에 남기지 않는다.
 // 모든 쓰기 쿼리에 user_id 조건을 넣어 소유자를 확인한다. 남의 댓글과 없는 댓글은 똑같이 not_found로 돌려준다.
+const { isValidIsbn13 } = require('../validators/commentValidator');
 
 const HIDDEN_PLACEHOLDER = '숨겨진 댓글입니다.';
 const DELETED_PLACEHOLDER = '삭제된 댓글입니다.';
@@ -329,6 +330,66 @@ const deleteComment = async (pool, { userId, id }) => {
   return { result: 'not_found' };
 };
 
+// ---- AI 댓글 요약 입력 ----
+
+// 요약 대상 조건 (원댓글과 답글에 똑같이 적용): 삭제 표시 아님, 숨김 아님, 스포일러는 includeSpoilers일 때만
+// $2는 includeSpoilers(boolean)
+const SUMMARY_ELIGIBLE_SQL = 'c.deleted_at IS NULL AND NOT c.is_hidden AND ($2::boolean OR NOT c.is_spoiler)';
+
+// 책(isbn)의 댓글을 AI 요약 입력용으로 가져온다. 최대 limit개(원댓글 + 답글, 기본 100).
+//  - 삭제 표시와 숨김 댓글은 항상 제외한다. 스포일러 댓글은 includeSpoilers가 true일 때만 포함한다. (기본 제외)
+//  - 원댓글과 답글의 연결을 유지한다. 부모가 제외되면 그 답글도 제외한다. (buildSummaryInput 참고)
+//  - 쿼리는 2개다: 최신 원댓글 limit개, 그 원댓글들의 답글(원댓글 최신순, 같은 원댓글 안에서는 오래된 순) 최대 limit개.
+//    스레드마다 원댓글이 1개를 쓰므로 답글은 limit개보다 많이 필요하지 않다.
+//    두 쿼리 사이에 댓글이 바뀌어도 부모가 없는 답글은 버려지므로 연결이 깨진 결과는 나오지 않는다.
+//  - 반환 모양은 buildSummaryInput과 같고 include_spoilers가 붙는다.
+//    { threads: [{ id, content, created_at, is_spoiler, replies: [{ id, parent_id, content, created_at, is_spoiler }] }],
+//      counts: { total, roots, replies }, include_spoilers }
+//    user_id와 nickname은 반환하지 않는다. id는 요약의 근거 댓글 보기·원문 이동용이다.
+//  - 댓글 원문이 들어 있다. 이 함수는 로그를 남기지 않는다. 외부 AI로 보내기 전 처리는 호출하는 쪽의 몫이다.
+// 잘못된 인자는 호출하는 코드의 실수이므로 예외를 던진다. (메시지에 입력값을 넣지 않는다)
+const listCommentsForSummary = async (pool, { isbn, includeSpoilers = false, limit = SUMMARY_MAX_COMMENTS } = {}) => {
+  if (!isValidIsbn13(isbn)) {
+    throw new Error('요약 대상 isbn 인자가 올바르지 않습니다.');
+  }
+  if (typeof includeSpoilers !== 'boolean') {
+    throw new Error('includeSpoilers 인자는 true 또는 false여야 합니다.');
+  }
+  if (!Number.isInteger(limit) || limit < 1 || limit > SUMMARY_MAX_COMMENTS) {
+    throw new Error(`limit 인자는 1 이상 ${SUMMARY_MAX_COMMENTS} 이하의 정수여야 합니다.`);
+  }
+
+  const rootsQuery = `
+    SELECT c.id, c.content, c.created_at, c.is_spoiler
+      FROM comments c
+     WHERE c.isbn = $1 AND c.parent_id IS NULL AND ${SUMMARY_ELIGIBLE_SQL}
+     ORDER BY c.id DESC
+     LIMIT $3`;
+  const repliesQuery = `
+    WITH roots AS (
+      SELECT c.id
+        FROM comments c
+       WHERE c.isbn = $1 AND c.parent_id IS NULL AND ${SUMMARY_ELIGIBLE_SQL}
+       ORDER BY c.id DESC
+       LIMIT $3
+    )
+    SELECT c.id, c.parent_id, c.content, c.created_at, c.is_spoiler
+      FROM comments c
+      JOIN roots ON roots.id = c.parent_id
+     WHERE ${SUMMARY_ELIGIBLE_SQL}
+     ORDER BY c.parent_id DESC, c.id ASC
+     LIMIT $3`;
+  const params = [isbn, includeSpoilers, limit];
+
+  const [rootsResult, repliesResult] = await Promise.all([
+    pool.query(rootsQuery, params),
+    pool.query(repliesQuery, params),
+  ]);
+
+  const input = buildSummaryInput(rootsResult.rows, repliesResult.rows, { max: limit });
+  return { ...input, include_spoilers: includeSpoilers };
+};
+
 module.exports = {
   HIDDEN_PLACEHOLDER,
   DELETED_PLACEHOLDER,
@@ -340,4 +401,5 @@ module.exports = {
   createComment,
   setHidden,
   deleteComment,
+  listCommentsForSummary,
 };
