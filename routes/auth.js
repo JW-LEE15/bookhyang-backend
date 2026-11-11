@@ -5,6 +5,7 @@ const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 const { validateSignup, validateLogin } = require('../validators/authValidator');
 const { signToken } = require('../config/auth');
+const { loginLimiter, signupLimiter } = require('../middleware/rateLimiters');
 
 const SALT_ROUNDS = 10;
 const LOGIN_FAIL_MESSAGE = '이메일 또는 비밀번호가 일치하지 않습니다.';
@@ -13,8 +14,8 @@ const DUPLICATE_EMAIL_MESSAGE = '이미 가입된 이메일입니다.';
 // 없는 이메일로 로그인할 때도 비교 시간을 맞추기 위한 더미 해시 (서버 시작 시 한 번 생성)
 const DUMMY_HASH = bcrypt.hashSync(crypto.randomBytes(32).toString('hex'), SALT_ROUNDS);
 
-// 회원가입 API (POST /api/auth/signup)
-router.post('/signup', async (req, res) => {
+// 회원가입 API (POST /api/auth/signup) - IP당 1시간 10회
+router.post('/signup', signupLimiter, async (req, res) => {
   try {
     const validation = validateSignup(req.body);
     if (!validation.ok) {
@@ -66,8 +67,8 @@ router.post('/signup', async (req, res) => {
   }
 });
 
-// 이메일 로그인 API (POST /api/auth/login)
-router.post('/login', async (req, res) => {
+// 이메일 로그인 API (POST /api/auth/login) - IP당 15분 10회, 성공한 요청은 세지 않음
+router.post('/login', loginLimiter, async (req, res) => {
   try {
     const validation = validateLogin(req.body);
     if (!validation.ok) {
