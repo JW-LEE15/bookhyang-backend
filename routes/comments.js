@@ -1,22 +1,42 @@
 // routes/comments.js: 책별 댓글 API (책은 ISBN13으로 구분)
-// 조회(GET)는 공개, 작성(POST)과 삭제(DELETE)는 로그인 필요. 그래서 router.use가 아니라 라우트별로 requireAuth를 붙인다.
+// 조회(GET)는 공개(로그인하면 "내 것"과 본인 숨김 댓글 원문이 보인다), 작성·숨김·삭제는 로그인 필요.
+// 그래서 router.use가 아니라 라우트별로 인증 미들웨어를 붙인다.
+// DB 로직은 services/comments.js에 있다. 오류 로그에는 오류 이름과 DB 오류 코드만 남긴다. (댓글 원문 보호)
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
 const requireAuth = require('../middleware/requireAuth');
+const optionalAuth = require('../middleware/optionalAuth');
+const { describeError } = require('../services/safeError');
+const commentsService = require('../services/comments');
 const {
   parseBigintId,
   validateCreateComment,
   validateListQuery,
+  validateRepliesQuery,
+  validateHiddenBody,
 } = require('../validators/commentValidator');
 
 const NOT_FOUND_MESSAGE = '댓글을 찾을 수 없습니다.';
 
-// 응답에 쓰는 컬럼. id는 bigint라 pg가 문자열로 돌려준다 (그대로 문자열로 응답)
-const COMMENT_COLUMNS = 'c.id, c.isbn, c.user_id, c.content, c.created_at, u.nickname';
+// 답글 작성이 거절된 이유 -> 응답 (기존 오류 응답 모양 {success, message}에 code만 추가)
+const REPLY_FAILURES = {
+  parent_not_found: { status: 404, code: 'PARENT_NOT_FOUND', message: NOT_FOUND_MESSAGE },
+  reply_to_reply: { status: 400, code: 'REPLY_TO_REPLY', message: '답글에는 답글을 달 수 없습니다.' },
+  isbn_mismatch: { status: 400, code: 'ISBN_MISMATCH', message: '답글은 원댓글과 같은 책에만 달 수 있습니다.' },
+  parent_hidden: { status: 409, code: 'PARENT_HIDDEN', message: '숨겨진 댓글에는 답글을 달 수 없습니다.' },
+};
 
-// 1. 책별 댓글 목록 (GET /api/comments?isbn=&limit=&before=) - 최신순, 인증 불필요
-router.get('/', async (req, res) => {
+const notFound = (res) => res.status(404).json({ success: false, message: NOT_FOUND_MESSAGE });
+
+const serverError = (res, label, error, message) => {
+  console.error(`${label}:`, describeError(error));
+  return res.status(500).json({ success: false, message });
+};
+
+// 1. 책별 원댓글 목록 (GET /api/comments?isbn=&limit=&before=) - 최신순, 인증 불필요
+//    data는 원댓글만이고 각 항목에 reply_count가 있다. 답글은 GET /api/comments/:id/replies
+router.get('/', optionalAuth, async (req, res) => {
   try {
     const validation = validateListQuery(req.query);
     if (!validation.ok) {
@@ -24,102 +44,133 @@ router.get('/', async (req, res) => {
     }
     const { isbn, limit, before } = validation.value;
 
-    // 다음 페이지가 있는지 알기 위해 1개 더 가져온다
-    const listQuery = `
-      SELECT ${COMMENT_COLUMNS}
-      FROM comments c
-      JOIN users u ON u.id = c.user_id
-      WHERE c.isbn = $1 AND ($2::bigint IS NULL OR c.id < $2::bigint)
-      ORDER BY c.id DESC
-      LIMIT $3
-    `;
-    const countQuery = 'SELECT COUNT(*) AS total FROM comments WHERE isbn = $1';
-
-    const [listResult, countResult] = await Promise.all([
-      pool.query(listQuery, [isbn, before, limit + 1]),
-      pool.query(countQuery, [isbn]),
-    ]);
-
-    const hasMore = listResult.rows.length > limit;
-    const rows = hasMore ? listResult.rows.slice(0, limit) : listResult.rows;
+    const result = await commentsService.listComments(pool, {
+      isbn,
+      limit,
+      before,
+      viewerId: req.userId,
+    });
 
     return res.status(200).json({
       success: true,
-      data: rows,
-      total: Number(countResult.rows[0].total),
-      nextCursor: hasMore ? rows[rows.length - 1].id : null,
+      data: result.data,
+      total: result.total,
+      top_level_total: result.topLevelTotal,
+      nextCursor: result.nextCursor,
     });
   } catch (error) {
-    console.error('댓글 목록 조회 실패:', error);
-    return res.status(500).json({
-      success: false,
-      message: '댓글 목록 조회 중 오류가 발생했습니다.',
-    });
+    return serverError(res, '댓글 목록 조회 실패', error, '댓글 목록 조회 중 오류가 발생했습니다.');
   }
 });
 
-// 2. 댓글 작성 (POST /api/comments) - 작성자는 토큰의 req.userId만 쓴다 (body의 user_id는 무시)
+// 2. 답글 목록 (GET /api/comments/:id/replies?limit=&after=) - 오래된 순, 인증 불필요
+router.get('/:id/replies', optionalAuth, async (req, res) => {
+  try {
+    const id = parseBigintId(req.params.id);
+    if (id === null) return notFound(res);
+
+    const validation = validateRepliesQuery(req.query);
+    if (!validation.ok) {
+      return res.status(400).json({ success: false, message: validation.message });
+    }
+    const { limit, after } = validation.value;
+
+    const result = await commentsService.listReplies(pool, { id, limit, after, viewerId: req.userId });
+    if (result.result === 'not_found') return notFound(res);
+
+    return res.status(200).json({
+      success: true,
+      data: result.data,
+      total: result.total,
+      nextCursor: result.nextCursor,
+    });
+  } catch (error) {
+    return serverError(res, '답글 목록 조회 실패', error, '답글 목록 조회 중 오류가 발생했습니다.');
+  }
+});
+
+// 3. 댓글·답글 작성 (POST /api/comments) - 작성자는 토큰의 req.userId만 쓴다 (body의 user_id는 무시)
+//    body: { isbn, content, parent_id?, is_spoiler? }  (parent_id가 있으면 답글)
 router.post('/', requireAuth, async (req, res) => {
   try {
     const validation = validateCreateComment(req.body);
     if (!validation.ok) {
       return res.status(400).json({ success: false, message: validation.message });
     }
-    const { isbn, content } = validation.value;
+    const { isbn, content, parentId, isSpoiler } = validation.value;
 
-    const insertQuery = `
-      WITH inserted AS (
-        INSERT INTO comments (isbn, user_id, content)
-        VALUES ($1, $2, $3)
-        RETURNING id, isbn, user_id, content, created_at
-      )
-      SELECT c.id, c.isbn, c.user_id, c.content, c.created_at, u.nickname
-      FROM inserted c
-      JOIN users u ON u.id = c.user_id
-    `;
-    const result = await pool.query(insertQuery, [isbn, req.userId, content]);
+    const result = await commentsService.createComment(pool, {
+      userId: req.userId,
+      isbn,
+      content,
+      parentId,
+      isSpoiler,
+    });
+
+    if (result.result !== 'ok') {
+      const failure = REPLY_FAILURES[result.result];
+      return res.status(failure.status).json({
+        success: false,
+        code: failure.code,
+        message: failure.message,
+      });
+    }
 
     return res.status(201).json({
       success: true,
       message: '댓글이 등록되었습니다.',
-      data: result.rows[0],
+      data: result.data,
     });
   } catch (error) {
-    console.error('댓글 작성 실패:', error);
-    return res.status(500).json({
-      success: false,
-      message: '댓글 작성 중 오류가 발생했습니다.',
-    });
+    return serverError(res, '댓글 작성 실패', error, '댓글 작성 중 오류가 발생했습니다.');
   }
 });
 
-// 3. 댓글 삭제 (DELETE /api/comments/:id) - 본인 댓글만. 남의 댓글·없는 댓글·잘못된 id는 똑같이 404
+// 4. 내 댓글 숨기기·숨김 해제 (PATCH /api/comments/:id/hidden) body: { is_hidden: boolean }
+//    본인 댓글만. 남의 댓글·없는 댓글·삭제된 댓글·잘못된 id는 똑같이 404. 이미 같은 상태여도 200.
+router.patch('/:id/hidden', requireAuth, async (req, res) => {
+  try {
+    const id = parseBigintId(req.params.id);
+    if (id === null) return notFound(res);
+
+    const validation = validateHiddenBody(req.body);
+    if (!validation.ok) {
+      return res.status(400).json({ success: false, message: validation.message });
+    }
+
+    const result = await commentsService.setHidden(pool, {
+      userId: req.userId,
+      id,
+      isHidden: validation.value.isHidden,
+    });
+    if (result.result === 'not_found') return notFound(res);
+
+    return res.status(200).json({
+      success: true,
+      message: validation.value.isHidden ? '댓글을 숨겼습니다.' : '댓글 숨김을 해제했습니다.',
+      data: result.data,
+    });
+  } catch (error) {
+    return serverError(res, '댓글 숨김 변경 실패', error, '댓글 숨김 변경 중 오류가 발생했습니다.');
+  }
+});
+
+// 5. 댓글 삭제 (DELETE /api/comments/:id) - 본인 댓글만. 남의 댓글·없는 댓글·잘못된 id는 똑같이 404
+//    답글이 달린 원댓글은 「삭제된 댓글입니다」로 남고, 그 밖의 댓글은 실제로 삭제된다. (응답은 같다)
 router.delete('/:id', requireAuth, async (req, res) => {
   try {
     const id = parseBigintId(req.params.id);
-    if (id === null) {
-      return res.status(404).json({ success: false, message: NOT_FOUND_MESSAGE });
-    }
+    if (id === null) return notFound(res);
 
-    const result = await pool.query(
-      'DELETE FROM comments WHERE id = $1 AND user_id = $2 RETURNING id',
-      [id, req.userId]
-    );
-
-    if (result.rowCount === 0) {
-      return res.status(404).json({ success: false, message: NOT_FOUND_MESSAGE });
-    }
+    const result = await commentsService.deleteComment(pool, { userId: req.userId, id });
+    if (result.result === 'not_found') return notFound(res);
 
     return res.status(200).json({
       success: true,
       message: '댓글이 삭제되었습니다.',
     });
   } catch (error) {
-    console.error('댓글 삭제 실패:', error);
-    return res.status(500).json({
-      success: false,
-      message: '댓글 삭제 중 오류가 발생했습니다.',
-    });
+    return serverError(res, '댓글 삭제 실패', error, '댓글 삭제 중 오류가 발생했습니다.');
   }
 });
 
