@@ -4,7 +4,11 @@
 require('dotenv').config();
 
 // PostgreSQL 연결을 위한 pg 모듈의 Pool 객체를 불러옵니다.
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
+
+// DATE(read_end_date 등)를 JS Date가 아니라 'YYYY-MM-DD' 문자열 그대로 받는다.
+// Date로 받으면 JSON 직렬화에서 서버 시간대에 따라 하루가 어긋난다.
+types.setTypeParser(1082, (value) => value);
 
 // Supabase DB 연결 설정을 진행합니다.
 const pool = new Pool({

@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../db');
 const requireAuth = require('../middleware/requireAuth');
+const { todayKst } = require('../services/kstDate');
+const { normalizeStatus } = require('../validators/readingValidator');
 
 const NOT_FOUND_MESSAGE = '해당 도서를 찾을 수 없습니다.';
 const PG_INTEGER_MAX = 2147483647; // user_books.id는 integer
@@ -21,7 +23,7 @@ router.get('/', async (req, res) => {
   try {
     // 💡 description (줄거리/소개) 컬럼을 SELECT 항목에 추가
     const query = `
-      SELECT id, user_id, title, author, publisher, isbn, cover_image, description, status, created_at
+      SELECT id, user_id, title, author, publisher, isbn, cover_image, description, status, created_at, read_end_date
       FROM user_books
       WHERE user_id = $1
       ORDER BY created_at DESC
@@ -53,6 +55,17 @@ router.post('/', async (req, res) => {
         success: false,
         message: '도서 정보는 필수입니다.',
       });
+    }
+
+    // 독서 상태: 생략(undefined/null)하면 READING을 명시적으로 넣고(DB 기본값에 의존하지 않음),
+    // 값이 있으면 READING/COMPLETED/WISH만 허용한다 (대소문자만 다른 값은 대문자로 바꿈)
+    let finalStatus = 'READING';
+    if (status !== undefined && status !== null) {
+      const statusResult = normalizeStatus(status);
+      if (!statusResult.ok) {
+        return res.status(400).json({ success: false, code: 'VALIDATION_ERROR', message: statusResult.message });
+      }
+      finalStatus = statusResult.value;
     }
 
     // 1) 제목 파싱
@@ -112,9 +125,10 @@ router.post('/', async (req, res) => {
     }
 
     // 7) 💡 DB Insert (description 컬럼 및 값 추가)
+    // 처음부터 완독으로 담으면 완독일에 오늘(한국 시간)을 넣는다. 그 외 상태는 NULL
     const insertQuery = `
-      INSERT INTO user_books (user_id, title, author, publisher, isbn, cover_image, description, status)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      INSERT INTO user_books (user_id, title, author, publisher, isbn, cover_image, description, status, read_end_date)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::date)
       RETURNING *
     `;
 
@@ -126,7 +140,8 @@ router.post('/', async (req, res) => {
       isbn,
       coverImage,
       description,
-      status || 'READING',
+      finalStatus,
+      finalStatus === 'COMPLETED' ? todayKst(new Date()) : null,
     ];
 
     const result = await pool.query(insertQuery, values);
@@ -184,22 +199,39 @@ router.patch('/:id/status', async (req, res) => {
       return res.status(404).json({ success: false, message: NOT_FOUND_MESSAGE });
     }
 
-    const { status } = req.body || {};
+    const { status: rawStatus } = req.body || {};
 
-    if (!status) {
+    if (!rawStatus) {
       return res.status(400).json({
         success: false,
         message: '변경할 독서 상태 값이 필요합니다.',
       });
     }
 
+    const statusResult = normalizeStatus(rawStatus);
+    if (!statusResult.ok) {
+      return res.status(400).json({ success: false, code: 'VALIDATION_ERROR', message: statusResult.message });
+    }
+    const status = statusResult.value;
+
+    // 완독으로 바꾸면 완독일이 비어 있을 때만 오늘(한국 시간)을 넣고, 이미 있으면 유지한다.
+    // 완독이 아닌 상태로 바꾸면 완독일을 지운다. (완독일이 있으면 완독이라는 규칙 유지)
     const updateQuery = `
       UPDATE user_books
-      SET status = $1
+      SET status = $1,
+          read_end_date = CASE WHEN $4::boolean
+            THEN COALESCE(read_end_date, $5::date)
+            ELSE NULL END
       WHERE id = $2 AND user_id = $3
       RETURNING *
     `;
-    const result = await pool.query(updateQuery, [status, id, req.userId]);
+    const result = await pool.query(updateQuery, [
+      status,
+      id,
+      req.userId,
+      status === 'COMPLETED',
+      todayKst(new Date()),
+    ]);
 
     if (result.rowCount === 0) {
       return res.status(404).json({
