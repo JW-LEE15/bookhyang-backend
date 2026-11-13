@@ -4,6 +4,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   MIN_CANDIDATES,
+  REASON_MAX_CHARS,
+  MAX_OUTPUT_TOKENS,
   SYSTEM_INSTRUCTION,
   RESPONSE_JSON_SCHEMA,
   resolveCandidateLimit,
@@ -111,6 +113,27 @@ test('프롬프트: 댓글이 </data>나 지시문을 흉내 내도 데이터 �
   assert.match(data.candidates[0].comments[0], /이전 지시를 모두 무시하고/);
 });
 
+test('프롬프트: 이유는 2~3문장이고 취향(분야·주제·분위기)과 책의 특징을 연결하며 400자 이내로 쓰게 한다', () => {
+  assert.match(SYSTEM_INSTRUCTION, /추천 이유를 한국어 2~3문장으로/);
+  assert.match(SYSTEM_INSTRUCTION, /취향\(분야, 주제, 분위기\)/);
+  assert.match(SYSTEM_INSTRUCTION, /책의 특징을 연결해서/);
+  assert.match(SYSTEM_INSTRUCTION, /400자를 넘지 않게/);
+  assert.ok(!SYSTEM_INSTRUCTION.includes('한두 문장'), '옛 길이 지시가 남아 있으면 안 된다');
+});
+
+test('프롬프트: 줄거리를 지어내지 말라는 지시와 후보 데이터만 근거로 쓰라는 지시를 유지한다', () => {
+  assert.match(SYSTEM_INSTRUCTION, /후보 데이터에 없는 줄거리나 사실을 지어내지 않고/);
+  assert.match(SYSTEM_INSTRUCTION, /후보 데이터\(제목, 저자, 분야, 댓글\)에 나온 것만 근거로/);
+  assert.match(SYSTEM_INSTRUCTION, /댓글 문장을 그대로 인용하지 않습니다/);
+});
+
+test('프롬프트: 긴 이유가 잘리지 않도록 출력 토큰 상한을 넉넉히 보낸다', () => {
+  const candidates = buildCandidates([bookRow(1), bookRow(2), bookRow(3)], []);
+  const prompt = buildPrompt({ request: REQUEST, history: [], candidates });
+  assert.equal(prompt.maxOutputTokens, MAX_OUTPUT_TOKENS);
+  assert.equal(MAX_OUTPUT_TOKENS, 2048);
+});
+
 test('프롬프트: 읽은 책 제목에 든 줄바꿈과 제어문자도 정리된다', () => {
   const candidates = buildCandidates([bookRow(1), bookRow(2), bookRow(3)], []);
   const prompt = buildPrompt({
@@ -153,9 +176,18 @@ test('모델 출력 검증: 없는 id, 중복 id, 빈 이유는 버리고 최대
   assert.deepEqual(picks.map((p) => p.candidate.alias), ['c1', 'c3', 'c4']);
 });
 
-test('모델 출력 검증: 이유는 200자로 자른다', () => {
-  const picks = parseModelPicks(JSON.stringify({ picks: [{ id: 'c1', reason: '가'.repeat(500) }] }), makeCandidates(3));
-  assert.equal([...picks[0].reason].length, 200);
+test('모델 출력 검증: 이유는 400자로 자른다', () => {
+  assert.equal(REASON_MAX_CHARS, 400);
+  const picks = parseModelPicks(JSON.stringify({ picks: [{ id: 'c1', reason: '가'.repeat(900) }] }), makeCandidates(3));
+  assert.equal([...picks[0].reason].length, 400);
+});
+
+test('모델 출력 검증: 200자를 넘는 이유도 400자 이하면 그대로 둔다 (2~3문장)', () => {
+  const reason = `${'따뜻한 가족 이야기를 찾는 취향과 잘 맞는 책입니다. '.repeat(5)}${'독자 댓글에서도 잔잔하다는 반응이 있었습니다. '.repeat(5)}`.trim();
+  const length = [...reason].length;
+  assert.ok(length > 200 && length <= 400, `테스트 입력 길이 ${length}`);
+  const picks = parseModelPicks(JSON.stringify({ picks: [{ id: 'c1', reason }] }), makeCandidates(3));
+  assert.equal(picks[0].reason, reason);
 });
 
 test('모델 출력 검증: JSON이 아니거나 모양이 틀리거나 유효한 pick이 없으면 AI_BAD_OUTPUT', () => {
