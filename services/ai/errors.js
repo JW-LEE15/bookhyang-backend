@@ -4,17 +4,18 @@
 
 const ERROR_DEFINITIONS = {
   AI_BUSY: { status: 429, message: '지금 AI 요청이 많습니다. 잠시 후 다시 시도해 주세요.' },
-  AI_UNAVAILABLE: { status: 503, message: '지금은 AI 추천을 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.' },
+  AI_UNAVAILABLE: { status: 503, message: '지금은 AI 기능을 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.' },
   AI_TIMEOUT: { status: 504, message: 'AI 응답이 늦어지고 있습니다. 잠시 후 다시 시도해 주세요.' },
   AI_BAD_OUTPUT: { status: 502, message: 'AI 응답을 처리하지 못했습니다. 다시 시도해 주세요.' },
   NOT_ENOUGH_CANDIDATES: { status: 422, message: '추천할 수 있는 책이 부족합니다.' },
+  NOT_ENOUGH_COMMENTS: { status: 422, message: '요약할 댓글이 부족합니다. 댓글이 5개 이상 모이면 요약할 수 있습니다.' },
 };
 
 // 계약에 없는 예상 못 한 실패
 const INTERNAL_ERROR_BODY = {
   success: false,
   code: 'INTERNAL_ERROR',
-  message: '추천 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.',
+  message: 'AI 기능을 처리하는 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.',
 };
 
 class AiError extends Error {

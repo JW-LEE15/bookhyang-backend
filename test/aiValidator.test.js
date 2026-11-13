@@ -1,7 +1,13 @@
 // test/aiValidator.test.js: AI 추천 요청 검증 (순수 함수 테스트)
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { validateRecommendRequest, GENRES, TOPICS, MOODS } = require('../validators/aiValidator');
+const {
+  validateRecommendRequest,
+  validateCommentSummaryRequest,
+  GENRES,
+  TOPICS,
+  MOODS,
+} = require('../validators/aiValidator');
 
 const EMPTY = { genres: [], topics: [], moods: [], useHistory: false, refresh: false };
 
@@ -69,4 +75,49 @@ test('실패 결과에는 한국어 메시지가 있다', () => {
   assert.equal(result.ok, false);
   assert.equal(typeof result.message, 'string');
   assert.ok(result.message.length > 0);
+});
+
+// ---- 댓글 요약 요청 ----
+
+const SUMMARY_ISBN = '9790000000019';
+
+test('댓글 요약: isbn만 있으면 includeSpoilers와 refresh는 false', () => {
+  assert.deepEqual(validateCommentSummaryRequest({ isbn: SUMMARY_ISBN }), {
+    ok: true,
+    value: { isbn: SUMMARY_ISBN, includeSpoilers: false, refresh: false },
+  });
+});
+
+test('댓글 요약: includeSpoilers와 refresh를 읽고 모르는 필드는 무시한다', () => {
+  const result = validateCommentSummaryRequest({
+    isbn: '9788937460777',
+    includeSpoilers: true,
+    refresh: true,
+    user_id: 'x',
+  });
+  assert.deepEqual(result, {
+    ok: true,
+    value: { isbn: '9788937460777', includeSpoilers: true, refresh: true },
+  });
+});
+
+test('댓글 요약: isbn이 없거나 형식이 틀리면 거부한다', () => {
+  for (const isbn of [undefined, null, '', '123', '978893746077', '97889374607777', 'abcdefghijklm', 9788937460777, ['9788937460777'], '9778937460777']) {
+    const result = validateCommentSummaryRequest({ isbn });
+    assert.equal(result.ok, false, String(isbn));
+    assert.equal(typeof result.message, 'string');
+  }
+});
+
+test('댓글 요약: body가 없거나 객체가 아니면 거부한다', () => {
+  for (const body of [undefined, null, [], 'text', 5]) {
+    assert.equal(validateCommentSummaryRequest(body).ok, false, String(body));
+  }
+});
+
+test('댓글 요약: includeSpoilers와 refresh는 불리언만 허용한다', () => {
+  for (const bad of ['true', 'false', 1, 0, null, {}, []]) {
+    assert.equal(validateCommentSummaryRequest({ isbn: SUMMARY_ISBN, includeSpoilers: bad }).ok, false, `includeSpoilers ${JSON.stringify(bad)}`);
+    assert.equal(validateCommentSummaryRequest({ isbn: SUMMARY_ISBN, refresh: bad }).ok, false, `refresh ${JSON.stringify(bad)}`);
+  }
 });
