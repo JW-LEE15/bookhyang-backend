@@ -17,7 +17,8 @@ const COMMENTS_PER_BOOK = 2;
 const COMMENT_MAX_CHARS = 100;
 const HISTORY_LIMIT = 20;
 const TEXT_FIELD_MAX_CHARS = 200;
-const REASON_MAX_CHARS = 200;
+const REASON_MAX_CHARS = 400; // 추천 이유 상한 (2~3문장). 시연 피드백으로 200자에서 늘렸다.
+const MAX_OUTPUT_TOKENS = 2048; // 이유가 길어져서 공통 기본값(1024)보다 넉넉히. 책 3권 x 최대 400자. 실제 필요량은 로컬 호출로 확인한다.
 const CACHE_TTL_MS = 20000;
 
 const SYSTEM_INSTRUCTION = [
@@ -26,7 +27,7 @@ const SYSTEM_INSTRUCTION = [
   '2. candidates에 있는 책 중에서만 최대 3권을 고릅니다. 책은 id(예: c1)로만 가리키며, 목록에 없는 id를 만들지 않습니다.',
   '3. preferences(genres, topics, moods)에 값이 있으면 그에 어울리는 책을 우선해서 고릅니다. 모두 비어 있으면 후보 중에서 서로 다른 느낌의 책을 고릅니다.',
   '4. history는 사용자가 읽었거나 읽는 중인 책입니다. 취향을 짐작하는 참고로만 쓰고, 그 책들을 추천하지 않습니다.',
-  '5. 각 책마다 reason에 추천 이유를 한국어 한두 문장으로 씁니다. 한글, 숫자, 기본 문장부호만 쓰고 한자나 외국어 단어는 쓰지 않습니다. 후보 데이터에 없는 줄거리나 사실을 지어내지 않고, 댓글 문장을 그대로 인용하지 않습니다.',
+  '5. 각 책마다 reason에 추천 이유를 한국어 2~3문장으로 씁니다. preferences에 사용자가 고른 취향(분야, 주제, 분위기)이 있으면 그 취향과 책의 특징을 연결해서 설명합니다. 취향이 모두 비어 있으면 책의 특징만 설명합니다. 책의 특징은 후보 데이터(제목, 저자, 분야, 댓글)에 나온 것만 근거로 씁니다. reason은 400자를 넘지 않게 씁니다. 한글, 숫자, 기본 문장부호만 쓰고 한자나 외국어 단어는 쓰지 않습니다. 후보 데이터에 없는 줄거리나 사실을 지어내지 않고, 댓글 문장을 그대로 인용하지 않습니다.',
   '6. 출력은 지정된 JSON 형식만 사용합니다.',
 ].join('\n');
 
@@ -127,6 +128,7 @@ const buildPrompt = ({ request, history, candidates }) => {
     systemInstruction: SYSTEM_INSTRUCTION,
     userText: `다음 데이터 블록만 근거로 책을 추천해 주세요.\n<data>\n${dataBlock}\n</data>`,
     responseJsonSchema: RESPONSE_JSON_SCHEMA,
+    maxOutputTokens: MAX_OUTPUT_TOKENS,
   };
 };
 
@@ -305,6 +307,7 @@ module.exports = {
   MAX_PICKS,
   COMMENT_MAX_CHARS,
   REASON_MAX_CHARS,
+  MAX_OUTPUT_TOKENS,
   CACHE_TTL_MS,
   SYSTEM_INSTRUCTION,
   RESPONSE_JSON_SCHEMA,
