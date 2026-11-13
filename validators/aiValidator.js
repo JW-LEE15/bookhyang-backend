@@ -1,5 +1,7 @@
 // validators/aiValidator.js: AI 추천 요청 body 검증 (외부 의존성 없음)
 // 요청: { genres: string[], topics: string[], moods: string[], useHistory: boolean, refresh?: boolean }
+// 댓글 요약 요청: { isbn: string, includeSpoilers?: boolean, refresh?: boolean }
+const { isValidIsbn13 } = require('./commentValidator');
 
 const GENRES = ['소설', '시', '에세이'];
 const TOPICS = ['사랑', '가족', '성장', '사회', '철학', '역사', '일상', '삶과 죽음'];
@@ -67,6 +69,29 @@ const validateRecommendRequest = (body) => {
   };
 };
 
+// 댓글 요약 요청 body 검증: { isbn: string(ISBN13), includeSpoilers?: boolean, refresh?: boolean }
+// 통과하면 { ok: true, value: { isbn, includeSpoilers, refresh } } (없는 불리언은 false)
+const validateCommentSummaryRequest = (body) => {
+  if (body === undefined || body === null) {
+    body = {};
+  }
+  if (typeof body !== 'object' || Array.isArray(body)) {
+    return fail('요청 형식이 올바르지 않습니다.');
+  }
+  if (!isValidIsbn13(body.isbn)) {
+    return fail('ISBN13 형식(13자리 숫자)이 올바르지 않습니다.');
+  }
+  const includeSpoilers = validateFlag(body.includeSpoilers, 'includeSpoilers');
+  if (!includeSpoilers.ok) return includeSpoilers;
+  const refresh = validateFlag(body.refresh, 'refresh');
+  if (!refresh.ok) return refresh;
+
+  return {
+    ok: true,
+    value: { isbn: body.isbn, includeSpoilers: includeSpoilers.value, refresh: refresh.value },
+  };
+};
+
 module.exports = {
   GENRES,
   TOPICS,
@@ -75,4 +100,5 @@ module.exports = {
   MAX_TOPICS,
   MAX_MOODS,
   validateRecommendRequest,
+  validateCommentSummaryRequest,
 };
