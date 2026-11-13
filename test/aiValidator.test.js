@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   validateRecommendRequest,
   validateCommentSummaryRequest,
+  validateReadingReportRequest,
   GENRES,
   TOPICS,
   MOODS,
@@ -119,5 +120,41 @@ test('댓글 요약: includeSpoilers와 refresh는 불리언만 허용한다', (
   for (const bad of ['true', 'false', 1, 0, null, {}, []]) {
     assert.equal(validateCommentSummaryRequest({ isbn: SUMMARY_ISBN, includeSpoilers: bad }).ok, false, `includeSpoilers ${JSON.stringify(bad)}`);
     assert.equal(validateCommentSummaryRequest({ isbn: SUMMARY_ISBN, refresh: bad }).ok, false, `refresh ${JSON.stringify(bad)}`);
+  }
+});
+
+// ---- 독서 리포트 요청 ----
+
+test('독서 리포트: period만 있으면 includeNotes는 false', () => {
+  assert.deepEqual(validateReadingReportRequest({ period: 'this_month' }), {
+    ok: true,
+    value: { period: 'this_month', includeNotes: false },
+  });
+});
+
+test('독서 리포트: period와 includeNotes를 읽고 모르는 필드는 무시한다', () => {
+  assert.deepEqual(validateReadingReportRequest({ period: 'last_month', includeNotes: true, user_id: 'x', refresh: true }), {
+    ok: true,
+    value: { period: 'last_month', includeNotes: true },
+  });
+});
+
+test('독서 리포트: period가 없거나 허용값이 아니면 거부한다', () => {
+  for (const period of [undefined, null, '', 'THIS_MONTH', 'month', 'custom', 'this_month ', 1, ['this_month'], {}]) {
+    const result = validateReadingReportRequest({ period });
+    assert.equal(result.ok, false, String(period));
+    assert.equal(typeof result.message, 'string');
+  }
+});
+
+test('독서 리포트: body가 없거나 객체가 아니면 거부한다', () => {
+  for (const body of [undefined, null, [], 'text', 5]) {
+    assert.equal(validateReadingReportRequest(body).ok, false, String(body));
+  }
+});
+
+test('독서 리포트: includeNotes는 불리언만 허용한다', () => {
+  for (const bad of ['true', 'yes', 1, 0, null, {}, []]) {
+    assert.equal(validateReadingReportRequest({ period: 'this_month', includeNotes: bad }).ok, false, JSON.stringify(bad));
   }
 });

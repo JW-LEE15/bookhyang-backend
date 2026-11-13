@@ -1,6 +1,7 @@
 // validators/aiValidator.js: AI 추천 요청 body 검증 (외부 의존성 없음)
 // 요청: { genres: string[], topics: string[], moods: string[], useHistory: boolean, refresh?: boolean }
 // 댓글 요약 요청: { isbn: string, includeSpoilers?: boolean, refresh?: boolean }
+// 독서 리포트 요청: { period: 'this_month' | 'last_month', includeNotes?: boolean }
 const { isValidIsbn13 } = require('./commentValidator');
 
 const GENRES = ['소설', '시', '에세이'];
@@ -92,7 +93,29 @@ const validateCommentSummaryRequest = (body) => {
   };
 };
 
+const REPORT_PERIODS = ['this_month', 'last_month'];
+
+// 독서 리포트 요청 body 검증: { period: 'this_month' | 'last_month', includeNotes?: boolean }
+// 통과하면 { ok: true, value: { period, includeNotes } } (includeNotes가 없으면 false)
+const validateReadingReportRequest = (body) => {
+  if (body === undefined || body === null) {
+    body = {};
+  }
+  if (typeof body !== 'object' || Array.isArray(body)) {
+    return fail('요청 형식이 올바르지 않습니다.');
+  }
+  if (typeof body.period !== 'string' || !REPORT_PERIODS.includes(body.period)) {
+    return fail('period는 this_month 또는 last_month여야 합니다.');
+  }
+  const includeNotes = validateFlag(body.includeNotes, 'includeNotes');
+  if (!includeNotes.ok) return includeNotes;
+
+  return { ok: true, value: { period: body.period, includeNotes: includeNotes.value } };
+};
+
 module.exports = {
+  REPORT_PERIODS,
+  validateReadingReportRequest,
   GENRES,
   TOPICS,
   MOODS,

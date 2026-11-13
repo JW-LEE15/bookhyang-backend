@@ -9,6 +9,7 @@ const ERROR_DEFINITIONS = {
   AI_BAD_OUTPUT: { status: 502, message: 'AI 응답을 처리하지 못했습니다. 다시 시도해 주세요.' },
   NOT_ENOUGH_CANDIDATES: { status: 422, message: '추천할 수 있는 책이 부족합니다.' },
   NOT_ENOUGH_COMMENTS: { status: 422, message: '요약할 댓글이 부족합니다. 댓글이 5개 이상 모이면 요약할 수 있습니다.' },
+  NOT_ENOUGH_RECORDS: { status: 422, message: '리포트를 만들려면 해당 기간에 완독한 책이 2권 이상 필요해요.' },
 };
 
 // 계약에 없는 예상 못 한 실패
