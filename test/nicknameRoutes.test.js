@@ -76,8 +76,9 @@ test('정상 요청: 200, trim된 값과 토큰의 userId로만 UPDATE하고 응
   const { status, body } = await patch(ME, { nickname: '  새닉네임  ' });
   assert.equal(status, 200);
   assert.equal(body.success, true);
-  assert.deepEqual(body.user, userRow('새닉네임'));
+  assert.deepEqual(body.user, { ...userRow('새닉네임'), profile_image_url: null });
   assert.equal('password' in body.user, false);
+  assert.equal('profile_image_updated_at' in body.user, false);
   assert.equal(calls.length, 1);
   assert.match(calls[0].sql, /UPDATE users SET nickname/);
   assert.deepEqual(calls[0].params, [ME, '새닉네임']);
