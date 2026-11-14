@@ -8,6 +8,7 @@ const { signToken } = require('../config/auth');
 const { loginLimiter, signupLimiter } = require('../middleware/rateLimiters');
 const { nicknameLimiter } = require('../middleware/nicknameLimiter');
 const requireAuth = require('../middleware/requireAuth');
+const { toPublicUser } = require('../services/profileImage');
 
 const SALT_ROUNDS = 10;
 const LOGIN_FAIL_MESSAGE = '이메일 또는 비밀번호가 일치하지 않습니다.';
@@ -82,7 +83,12 @@ router.post('/login', loginLimiter, async (req, res) => {
     const { email, password } = validation.value;
 
     // 유저 존재 여부 확인
-    const userResult = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    // 컬럼을 명시한다. SELECT *로는 프로필 사진 바이트(profile_image)까지 읽게 된다.
+    const userResult = await pool.query(
+      `SELECT id, email, password, nickname, created_at, profile_image_updated_at
+         FROM users WHERE email = $1`,
+      [email]
+    );
     if (userResult.rows.length === 0) {
       // 없는 이메일이어도 bcrypt 비교를 한 번 해서 응답 시간을 비슷하게 맞춘다
       await bcrypt.compare(password, DUMMY_HASH);
@@ -103,16 +109,14 @@ router.post('/login', loginLimiter, async (req, res) => {
       });
     }
 
-    // 비밀번호 정보 제외 후 응답
-    delete user.password;
-
     // 서재 API에 쓸 로그인 토큰 (만료 7일)
     const token = signToken(user.id);
 
+    // 비밀번호는 응답에서 제외하고, 사진은 바이트 대신 URL(profile_image_url)로 알려 준다
     return res.status(200).json({
       success: true,
       message: '로그인에 성공했습니다.',
-      user,
+      user: toPublicUser(user),
       token,
     });
   } catch (error) {
@@ -139,7 +143,7 @@ router.patch('/nickname', requireAuth, nicknameLimiter, async (req, res) => {
     const updated = await pool.query(
       `UPDATE users SET nickname = $2
         WHERE id = $1
-        RETURNING id, email, nickname, created_at`,
+        RETURNING id, email, nickname, created_at, profile_image_updated_at`,
       [req.userId, validation.value.nickname]
     );
     if (updated.rows.length === 0) {
@@ -153,7 +157,7 @@ router.patch('/nickname', requireAuth, nicknameLimiter, async (req, res) => {
     return res.status(200).json({
       success: true,
       message: '닉네임이 변경되었습니다.',
-      user: updated.rows[0],
+      user: toPublicUser(updated.rows[0]),
     });
   } catch (error) {
     console.error('닉네임 수정 에러:', error.message);

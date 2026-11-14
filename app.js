@@ -28,7 +28,9 @@ try {
 const booksRouter = require('./routes/books');
 const userBooksRouter = require('./routes/userBooks');
 const readingRecordsRouter = require('./routes/readingRecords'); // 독서 기록 (완독일 수정)
-const authRouter = require('./routes/auth'); // 인증 라우터 (회원가입, 로그인)
+const authRouter = require('./routes/auth'); // 인증 라우터 (회원가입, 로그인, 닉네임 수정)
+const { profileImageStack } = require('./routes/profileImage'); // 내 프로필 사진 올리기·지우기
+const usersRouter = require('./routes/users'); // 사용자 공개 정보 (프로필 사진 보기)
 const commentsRouter = require('./routes/comments'); // 책별 댓글 (조회 공개, 작성·삭제 인증)
 const aiRouter = require('./routes/ai'); // AI 추천 (로그인 필요)
 const readingReportsRouter = require('./routes/readingReports'); // 저장된 AI 독서 리포트 (목록, 삭제)
@@ -49,6 +51,10 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'ngrok-skip-browser-warning'],
 }));
 
+// 프로필 사진 올리기·지우기는 전역 express.json()(기본 한도 100KB)보다 앞에 둔다.
+// base64 사진(약 137KB)을 받으려면 이 경로 전용 150KB 파서가 먼저 본문을 읽어야 한다. (인증 -> 횟수 제한 -> 파서 순서)
+app.use('/api/auth/profile-image', ...profileImageStack);
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -57,6 +63,7 @@ app.use('/api/books', booksRouter);
 app.use('/api/user-books', userBooksRouter);
 app.use('/api/user-books', readingRecordsRouter);
 app.use('/api/auth', authRouter); // 인증 API 엔드포인트 연결 (/api/auth/signup, /api/auth/login)
+app.use('/api/users', usersRouter);
 app.use('/api/comments', commentsRouter);
 app.use('/api/ai', aiRouter);
 app.use('/api/reading-reports', readingReportsRouter);

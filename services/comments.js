@@ -5,6 +5,7 @@
 // 이 파일에는 로그 출력이 없다. 댓글 원문을 로그에 남기지 않는다.
 // 모든 쓰기 쿼리에 user_id 조건을 넣어 소유자를 확인한다. 남의 댓글과 없는 댓글은 똑같이 not_found로 돌려준다.
 const { isValidIsbn13 } = require('../validators/commentValidator');
+const { buildProfileImageUrl } = require('./profileImage');
 
 const HIDDEN_PLACEHOLDER = '숨겨진 댓글입니다.';
 const DELETED_PLACEHOLDER = '삭제된 댓글입니다.';
@@ -14,7 +15,8 @@ const SUMMARY_MAX_COMMENTS = 100; // 요약 입력 최대 댓글 수 (원댓글 
 const toCount = (value) => Number(value) || 0;
 
 // DB 행을 응답용 댓글 객체로 바꾼다. (PR2의 목록·작성·숨김 응답이 같이 쓴다)
-// 행에 필요한 컬럼: id, isbn, user_id, content, created_at, nickname, parent_id, is_spoiler, is_hidden, deleted_at, reply_count
+// 행에 필요한 컬럼: id, isbn, user_id, content, created_at, nickname, profile_image_updated_at,
+//   parent_id, is_spoiler, is_hidden, deleted_at, reply_count
 // viewerId는 요청자 id이고 비로그인이면 null이다.
 //  - 삭제 표시: user_id·nickname은 null, 내용은 안내 문구. is_hidden은 의미가 없어 false로 낸다.
 //  - 숨김: 작성자 본인에게는 원문, 그 외에는 안내 문구. 닉네임과 user_id는 유지한다.
@@ -39,6 +41,8 @@ const maskComment = (row, viewerId = null) => {
     content,
     created_at: row.created_at,
     nickname: isDeleted ? null : row.nickname,
+    // 프로필 사진 URL (상대 경로). 사진이 없거나 삭제 표시 댓글이면 null. 숨김 댓글은 닉네임처럼 유지한다.
+    profile_image_url: isDeleted ? null : buildProfileImageUrl(row.user_id, row.profile_image_updated_at),
     parent_id: parentId,
     is_spoiler: isDeleted ? false : row.is_spoiler === true,
     is_hidden: isHidden,
@@ -125,7 +129,8 @@ const buildSummaryInput = (rootRows, replyRows, { max = SUMMARY_MAX_COMMENTS } =
 // ---- DB 함수 ----
 
 // 응답에 쓰는 컬럼. 순서와 이름은 maskComment가 읽는 행 모양과 같다.
-const COMMENT_COLUMNS = `c.id, c.isbn, c.user_id, c.content, c.created_at, u.nickname,
+// u.profile_image_updated_at는 사진 URL 조립용이다. 사진 바이트(u.profile_image)는 읽지 않는다.
+const COMMENT_COLUMNS = `c.id, c.isbn, c.user_id, c.content, c.created_at, u.nickname, u.profile_image_updated_at,
        c.parent_id, c.is_spoiler, c.is_hidden, c.deleted_at`;
 // 삭제되지 않은 답글 수 (숨김 포함). 원댓글에서만 의미가 있다.
 const REPLY_COUNT_SQL = '(SELECT COUNT(*) FROM comments r WHERE r.parent_id = c.id)';
@@ -206,7 +211,7 @@ const listReplies = async (pool, { id, limit, after = null, viewerId = null }) =
 
 // 작성 직후 응답용 SELECT (닉네임을 붙인다)
 const RETURNING_COLUMNS = 'id, isbn, user_id, content, created_at, parent_id, is_spoiler, is_hidden, deleted_at';
-const JOIN_NICKNAME_SQL = `SELECT i.*, u.nickname, 0 AS reply_count
+const JOIN_NICKNAME_SQL = `SELECT i.*, u.nickname, u.profile_image_updated_at, 0 AS reply_count
         FROM inserted i
         JOIN users u ON u.id = i.user_id`;
 
@@ -286,7 +291,7 @@ const setHidden = async (pool, { userId, id, isHidden }) => {
         WHERE id = $1::bigint AND user_id = $2::uuid AND deleted_at IS NULL
         RETURNING ${RETURNING_COLUMNS}
      )
-     SELECT i.*, u.nickname,
+     SELECT i.*, u.nickname, u.profile_image_updated_at,
             (SELECT COUNT(*) FROM comments r WHERE r.parent_id = i.id) AS reply_count
        FROM updated i
        JOIN users u ON u.id = i.user_id`,

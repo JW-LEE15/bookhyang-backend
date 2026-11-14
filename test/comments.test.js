@@ -106,8 +106,46 @@ test('응답에는 지정한 필드만 들어간다 (deleted_at 등 내부 컬�
   const out = maskComment(baseRow({ extra_secret: 'x' }), OTHER);
   assert.deepEqual(Object.keys(out).sort(), [
     'content', 'content_masked', 'created_at', 'id', 'is_deleted', 'is_hidden', 'is_mine',
-    'is_spoiler', 'isbn', 'nickname', 'parent_id', 'reply_count', 'user_id',
+    'is_spoiler', 'isbn', 'nickname', 'parent_id', 'profile_image_url', 'reply_count', 'user_id',
   ]);
+  // 사진 바이트와 올린 시각 원본은 응답에 나오지 않는다
+  const withImage = maskComment(baseRow({ profile_image: Buffer.from('x'), profile_image_updated_at: new Date(1700000000000) }), OTHER);
+  assert.equal('profile_image' in withImage, false);
+  assert.equal('profile_image_updated_at' in withImage, false);
+});
+
+// ---- profile_image_url ----
+
+test('profile_image_url: 사진이 없으면 null, 있으면 사용자 id와 올린 시각(ms)으로 만든 상대 경로', () => {
+  assert.equal(maskComment(baseRow(), OTHER).profile_image_url, null);
+  assert.equal(maskComment(baseRow({ profile_image_updated_at: null }), OTHER).profile_image_url, null);
+  const date = new Date(1700000000000);
+  assert.equal(
+    maskComment(baseRow({ profile_image_updated_at: date }), OTHER).profile_image_url,
+    `/api/users/${AUTHOR}/profile-image?v=1700000000000`
+  );
+  // 문자열 시각도 같은 값이 나온다
+  assert.equal(
+    maskComment(baseRow({ profile_image_updated_at: date.toISOString() }), OTHER).profile_image_url,
+    `/api/users/${AUTHOR}/profile-image?v=1700000000000`
+  );
+});
+
+test('profile_image_url: 숨김 댓글은 닉네임처럼 유지하고, 삭제 표시 댓글은 null', () => {
+  const updated = new Date(1700000000000);
+  const hidden = maskComment(baseRow({ is_hidden: true, profile_image_updated_at: updated }), OTHER);
+  assert.equal(hidden.profile_image_url, `/api/users/${AUTHOR}/profile-image?v=1700000000000`);
+  const deleted = maskComment(
+    baseRow({ deleted_at: '2026-11-12T01:00:00.000Z', content: '', profile_image_updated_at: updated }),
+    OTHER
+  );
+  assert.equal(deleted.profile_image_url, null);
+  assert.equal(JSON.stringify(deleted).includes(AUTHOR), false); // 삭제 표시 댓글에는 user_id가 어디에도 없다
+});
+
+test('profile_image_url: 올바른 uuid가 아닌 user_id나 이상한 시각이면 null (URL을 만들지 않는다)', () => {
+  assert.equal(maskComment(baseRow({ user_id: 'not-a-uuid', profile_image_updated_at: new Date(1) }), OTHER).profile_image_url, null);
+  assert.equal(maskComment(baseRow({ profile_image_updated_at: 'garbage' }), OTHER).profile_image_url, null);
 });
 
 // ---- buildSummaryInput ----
