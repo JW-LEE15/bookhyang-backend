@@ -3,9 +3,11 @@ const router = express.Router();
 const pool = require('../db');
 const bcrypt = require('bcrypt');
 const crypto = require('crypto');
-const { validateSignup, validateLogin } = require('../validators/authValidator');
+const { validateSignup, validateLogin, validateNicknameUpdate } = require('../validators/authValidator');
 const { signToken } = require('../config/auth');
 const { loginLimiter, signupLimiter } = require('../middleware/rateLimiters');
+const { nicknameLimiter } = require('../middleware/nicknameLimiter');
+const requireAuth = require('../middleware/requireAuth');
 
 const SALT_ROUNDS = 10;
 const LOGIN_FAIL_MESSAGE = '이메일 또는 비밀번호가 일치하지 않습니다.';
@@ -118,6 +120,46 @@ router.post('/login', loginLimiter, async (req, res) => {
     return res.status(500).json({
       success: false,
       message: '로그인 처리 중 오류가 발생했습니다.',
+    });
+  }
+});
+
+// 닉네임 수정 API (PATCH /api/auth/nickname) - 로그인 필요, 사용자당 1시간 10회
+// 닉네임 중복은 허용한다. (가입과 같음) 댓글은 users를 조인해서 닉네임을 읽으므로 과거 댓글에도 바로 반영된다.
+router.patch('/nickname', requireAuth, nicknameLimiter, async (req, res) => {
+  try {
+    const validation = validateNicknameUpdate(req.body);
+    if (!validation.ok) {
+      return res.status(400).json({
+        success: false,
+        message: validation.message,
+      });
+    }
+
+    const updated = await pool.query(
+      `UPDATE users SET nickname = $2
+        WHERE id = $1
+        RETURNING id, email, nickname, created_at`,
+      [req.userId, validation.value.nickname]
+    );
+    if (updated.rows.length === 0) {
+      // 토큰은 유효하지만 계정이 없는 경우 (탈퇴 등)
+      return res.status(404).json({
+        success: false,
+        message: '사용자를 찾을 수 없습니다.',
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: '닉네임이 변경되었습니다.',
+      user: updated.rows[0],
+    });
+  } catch (error) {
+    console.error('닉네임 수정 에러:', error.message);
+    return res.status(500).json({
+      success: false,
+      message: '닉네임 변경 중 오류가 발생했습니다.',
     });
   }
 });

@@ -17,6 +17,16 @@ const normalizeEmail = (email) => (typeof email === 'string' ? email.trim().toLo
 
 const fail = (message) => ({ ok: false, message });
 
+const NICKNAME_LENGTH_MESSAGE = `닉네임은 ${NICKNAME_MIN_LENGTH}~${NICKNAME_MAX_LENGTH}자로 입력해 주세요.`;
+const isNicknameLengthValid = (nickname) => {
+  const length = charLength(nickname);
+  return length >= NICKNAME_MIN_LENGTH && length <= NICKNAME_MAX_LENGTH;
+};
+
+// 닉네임 수정에서 거부할 문자: 제어문자(줄바꿈·탭 포함), 폭 없는 공백, 방향 제어, 줄·문단 구분자, BOM
+// (이모지를 잇는 ZWJ U+200D는 거부하지 않는다)
+const INVISIBLE_PATTERN = /[\p{Cc}\u200B\u200C\u200E\u200F\u2028\u2029\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/u;
+
 // 회원가입 검증. 통과하면 { ok: true, value: { email, password, nickname } }
 const validateSignup = (body) => {
   const { email, password, nickname } = body || {};
@@ -46,15 +56,35 @@ const validateSignup = (body) => {
   }
 
   const trimmedNickname = nickname.trim();
-  const nicknameLength = charLength(trimmedNickname);
-  if (nicknameLength < NICKNAME_MIN_LENGTH || nicknameLength > NICKNAME_MAX_LENGTH) {
-    return fail(`닉네임은 ${NICKNAME_MIN_LENGTH}~${NICKNAME_MAX_LENGTH}자로 입력해 주세요.`);
+  if (!isNicknameLengthValid(trimmedNickname)) {
+    return fail(NICKNAME_LENGTH_MESSAGE);
   }
 
   return {
     ok: true,
     value: { email: normalizedEmail, password, nickname: trimmedNickname },
   };
+};
+
+// 닉네임 수정 검증. 통과하면 { ok: true, value: { nickname } }
+// 가입과 같은 길이 규칙에 더해, 제어문자와 눈에 안 보이는 문자를 거부한다. (가입 동작은 바꾸지 않는다)
+// 유니코드 NFC로 정규화해서 저장한다. (자모가 분리된 한글 입력 대비)
+const validateNicknameUpdate = (body) => {
+  const { nickname } = body || {};
+
+  if (typeof nickname !== 'string' || nickname.trim() === '') {
+    return fail('닉네임을 입력해 주세요.');
+  }
+
+  const normalized = nickname.trim().normalize('NFC');
+  if (INVISIBLE_PATTERN.test(normalized)) {
+    return fail('닉네임에 사용할 수 없는 문자가 있습니다.');
+  }
+  if (!isNicknameLengthValid(normalized)) {
+    return fail(NICKNAME_LENGTH_MESSAGE);
+  }
+
+  return { ok: true, value: { nickname: normalized } };
 };
 
 // 로그인 검증. 길이 규칙은 적용하지 않고, 값이 있는 문자열인지만 확인한다.
@@ -74,5 +104,6 @@ const validateLogin = (body) => {
 module.exports = {
   normalizeEmail,
   validateSignup,
+  validateNicknameUpdate,
   validateLogin,
 };
