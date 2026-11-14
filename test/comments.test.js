@@ -106,12 +106,34 @@ test('응답에는 지정한 필드만 들어간다 (deleted_at 등 내부 컬�
   const out = maskComment(baseRow({ extra_secret: 'x' }), OTHER);
   assert.deepEqual(Object.keys(out).sort(), [
     'content', 'content_masked', 'created_at', 'id', 'is_deleted', 'is_hidden', 'is_mine',
-    'is_spoiler', 'isbn', 'nickname', 'parent_id', 'profile_image_url', 'reply_count', 'user_id',
+    'is_spoiler', 'isbn', 'like_count', 'liked_by_me', 'nickname', 'parent_id', 'profile_image_url', 'reply_count', 'user_id',
   ]);
   // 사진 바이트와 올린 시각 원본은 응답에 나오지 않는다
   const withImage = maskComment(baseRow({ profile_image: Buffer.from('x'), profile_image_updated_at: new Date(1700000000000) }), OTHER);
   assert.equal('profile_image' in withImage, false);
   assert.equal('profile_image_updated_at' in withImage, false);
+});
+
+// ---- like_count, liked_by_me ----
+
+test('하트 필드: 숫자 문자열은 number로, 행에 없으면 0/false (기존 행 모양과 호환)', () => {
+  const liked = maskComment(baseRow({ like_count: '4', liked_by_me: true }), OTHER);
+  assert.equal(liked.like_count, 4);
+  assert.equal(liked.liked_by_me, true);
+  const plain = maskComment(baseRow(), OTHER); // baseRow에는 하트 컬럼이 없다
+  assert.equal(plain.like_count, 0);
+  assert.equal(plain.liked_by_me, false);
+  assert.equal(maskComment(baseRow({ liked_by_me: 'true' }), OTHER).liked_by_me, false); // boolean true만 인정
+});
+
+test('하트 필드: 삭제 표시 댓글은 0/false, 타인에게 숨김인 댓글은 실제 값 유지', () => {
+  const deleted = maskComment(baseRow({ deleted_at: '2026-11-12T01:00:00.000Z', content: '', like_count: '5', liked_by_me: true }), OTHER);
+  assert.equal(deleted.like_count, 0);
+  assert.equal(deleted.liked_by_me, false);
+  const hidden = maskComment(baseRow({ is_hidden: true, like_count: '5', liked_by_me: true }), OTHER);
+  assert.equal(hidden.content, HIDDEN_PLACEHOLDER);
+  assert.equal(hidden.like_count, 5);
+  assert.equal(hidden.liked_by_me, true);
 });
 
 // ---- profile_image_url ----

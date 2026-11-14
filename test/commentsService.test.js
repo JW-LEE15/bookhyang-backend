@@ -64,8 +64,10 @@ test('원댓글 목록: 한 개 더 가져오고, 마스킹은 viewer 기준이�
 
   assert.equal(pool.calls.length, 2);
   const listCall = pool.calls.find((c) => !/FILTER/.test(c.sql));
-  assert.deepEqual(listCall.params, [ISBN, null, 3]); // limit + 1
+  assert.deepEqual(listCall.params, [ISBN, null, 3, OTHER]); // limit + 1, 요청자
   assert.match(listCall.sql, /parent_id IS NULL/);
+  assert.match(listCall.sql, /FROM comment_likes/);
+  assert.match(listCall.sql, /l\.user_id = \$4::uuid/);
   assert.match(listCall.sql, /ORDER BY c\.id DESC/);
 
   assert.equal(out.data.length, 2); // 한 개 더 가져온 것은 잘라낸다
@@ -82,7 +84,7 @@ test('원댓글 목록: 다음 페이지가 없으면 nextCursor는 null이고 b
   const out = await listComments(pool, { isbn: ISBN, limit: 20, before: '99' });
   assert.equal(out.nextCursor, null);
   const listCall = pool.calls.find((c) => !/FILTER/.test(c.sql));
-  assert.deepEqual(listCall.params, [ISBN, '99', 21]);
+  assert.deepEqual(listCall.params, [ISBN, '99', 21, null]); // 비로그인은 null
 });
 
 test('원댓글 목록: 비어 있으면 빈 배열과 0', async () => {
@@ -104,13 +106,13 @@ test('답글 목록: 원댓글이 없으면 not_found이고 더 조회하지 않
 test('답글 목록: 오래된 순, after 커서, 개수', async () => {
   const pool = fakePool((sql, params, index) => {
     if (index === 0) return { rows: [{ '?column?': 1 }] };
-    if (/COUNT/.test(sql)) return { rows: [{ total: '3' }] };
+    if (/AS total/.test(sql)) return { rows: [{ total: '3' }] }; // 목록 쿼리에도 하트 COUNT가 있어서 /COUNT/로는 구분할 수 없다
     return { rows: [row({ id: '11', parent_id: '10' }), row({ id: '12', parent_id: '10' }), row({ id: '13', parent_id: '10' })] };
   });
   const out = await listReplies(pool, { id: '10', limit: 2, after: '9', viewerId: null });
   const listCall = pool.calls.find((c) => /ORDER BY/.test(c.sql));
   assert.match(listCall.sql, /ORDER BY c\.id ASC/);
-  assert.deepEqual(listCall.params, ['10', '9', 3]);
+  assert.deepEqual(listCall.params, ['10', '9', 3, null]);
   assert.equal(out.result, 'ok');
   assert.equal(out.data.length, 2);
   assert.equal(out.total, 3);

@@ -1,5 +1,5 @@
 // routes/comments.js: 책별 댓글 API (책은 ISBN13으로 구분)
-// 조회(GET)는 공개(로그인하면 "내 것"과 본인 숨김 댓글 원문이 보인다), 작성·숨김·삭제는 로그인 필요.
+// 조회(GET)는 공개(로그인하면 "내 것", 내가 누른 하트, 본인 숨김 댓글 원문이 보인다), 작성·숨김·삭제·하트·신고는 로그인 필요.
 // 그래서 router.use가 아니라 라우트별로 인증 미들웨어를 붙인다.
 // DB 로직은 services/comments.js에 있다. 오류 로그에는 오류 이름과 DB 오류 코드만 남긴다. (댓글 원문 보호)
 const express = require('express');
@@ -15,7 +15,9 @@ const {
   validateListQuery,
   validateRepliesQuery,
   validateHiddenBody,
+  validateReportBody,
 } = require('../validators/commentValidator');
+const { commentLikeLimiter, commentReportLimiter } = require('../middleware/commentLimiters');
 
 const NOT_FOUND_MESSAGE = '댓글을 찾을 수 없습니다.';
 
@@ -171,6 +173,86 @@ router.delete('/:id', requireAuth, async (req, res) => {
     });
   } catch (error) {
     return serverError(res, '댓글 삭제 실패', error, '댓글 삭제 중 오류가 발생했습니다.');
+  }
+});
+
+// 6. 하트 누르기 (PUT /api/comments/:id/like) - 멱등. 인증 -> 횟수 제한 순서
+//    없는·삭제된 댓글, 타인의 숨김 댓글, 잘못된 id는 404. 본인 댓글은 400 LIKE_OWN_COMMENT
+router.put('/:id/like', requireAuth, commentLikeLimiter, async (req, res) => {
+  try {
+    const id = parseBigintId(req.params.id);
+    if (id === null) return notFound(res);
+
+    const result = await commentsService.likeComment(pool, { userId: req.userId, id });
+    if (result.result === 'not_found') return notFound(res);
+    if (result.result === 'own_comment') {
+      return res.status(400).json({
+        success: false,
+        code: 'LIKE_OWN_COMMENT',
+        message: '본인 댓글에는 하트를 누를 수 없습니다.',
+      });
+    }
+
+    return res.status(200).json({ success: true, data: result.data });
+  } catch (error) {
+    return serverError(res, '댓글 하트 실패', error, '댓글 하트 처리 중 오류가 발생했습니다.');
+  }
+});
+
+// 7. 하트 취소 (DELETE /api/comments/:id/like) - 멱등. 본인·숨김 댓글에도 허용
+//    없는·삭제된 댓글과 잘못된 id만 404
+router.delete('/:id/like', requireAuth, commentLikeLimiter, async (req, res) => {
+  try {
+    const id = parseBigintId(req.params.id);
+    if (id === null) return notFound(res);
+
+    const result = await commentsService.unlikeComment(pool, { userId: req.userId, id });
+    if (result.result === 'not_found') return notFound(res);
+
+    return res.status(200).json({ success: true, data: result.data });
+  } catch (error) {
+    return serverError(res, '댓글 하트 취소 실패', error, '댓글 하트 취소 중 오류가 발생했습니다.');
+  }
+});
+
+// 8. 댓글 신고 (POST /api/comments/:id/report) body: { reason, detail? } - 저장만 한다. (자동 숨김·삭제 없음)
+//    본인 댓글 400 REPORT_OWN_COMMENT, 중복 409 ALREADY_REPORTED, 없는·삭제된 댓글 404
+//    응답에 신고자 정보를 넣지 않고, detail과 신고자는 로그에 남기지 않는다.
+router.post('/:id/report', requireAuth, commentReportLimiter, async (req, res) => {
+  try {
+    const id = parseBigintId(req.params.id);
+    if (id === null) return notFound(res);
+
+    const validation = validateReportBody(req.body);
+    if (!validation.ok) {
+      return res.status(400).json({ success: false, message: validation.message });
+    }
+
+    const result = await commentsService.reportComment(pool, {
+      userId: req.userId,
+      id,
+      reason: validation.value.reason,
+      detail: validation.value.detail,
+    });
+    if (result.result === 'not_found') return notFound(res);
+    if (result.result === 'own_comment') {
+      return res.status(400).json({
+        success: false,
+        code: 'REPORT_OWN_COMMENT',
+        message: '본인 댓글은 신고할 수 없습니다.',
+      });
+    }
+    if (result.result === 'already_reported') {
+      return res.status(409).json({
+        success: false,
+        code: 'ALREADY_REPORTED',
+        message: '이미 신고한 댓글입니다.',
+      });
+    }
+
+    return res.status(201).json({ success: true, message: '신고가 접수되었습니다.' });
+  } catch (error) {
+    return serverError(res, '댓글 신고 실패', error, '댓글 신고 중 오류가 발생했습니다.');
   }
 });
 

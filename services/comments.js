@@ -1,7 +1,7 @@
 // services/comments.js: 댓글 응답 조립, 댓글 DB 로직, AI 요약 입력 조립
 //  - 순수 함수: maskComment, buildSummaryInput
 //  - DB 함수(pool을 첫 인자로 받는다): listComments, listReplies, createComment, setHidden, deleteComment,
-//    listCommentsForSummary (AI 요약 입력용 조회)
+//    likeComment, unlikeComment, reportComment, listCommentsForSummary (AI 요약 입력용 조회, 하트·신고와 무관)
 // 이 파일에는 로그 출력이 없다. 댓글 원문을 로그에 남기지 않는다.
 // 모든 쓰기 쿼리에 user_id 조건을 넣어 소유자를 확인한다. 남의 댓글과 없는 댓글은 똑같이 not_found로 돌려준다.
 const { isValidIsbn13 } = require('../validators/commentValidator');
@@ -51,6 +51,10 @@ const maskComment = (row, viewerId = null) => {
     is_mine: isMine,
     // 답글에는 답글이 없다
     reply_count: parentId === null ? toCount(row.reply_count) : 0,
+    // 하트 수와 내가 눌렀는지(liked_by_me는 SQL이 요청자 기준으로 계산, 비로그인은 false). 삭제 표시 댓글은 0/false.
+    // 숨김 댓글은 타인에게도 실제 값을 낸다.
+    like_count: isDeleted ? 0 : toCount(row.like_count),
+    liked_by_me: isDeleted ? false : row.liked_by_me === true,
   };
 };
 
@@ -138,6 +142,11 @@ const REPLY_COUNT_SQL = '(SELECT COUNT(*) FROM comments r WHERE r.parent_id = c.
 const VISIBLE_ROOT_SQL = `c.parent_id IS NULL
          AND (c.deleted_at IS NULL OR EXISTS (SELECT 1 FROM comments r WHERE r.parent_id = c.id))`;
 
+// 하트 수와 요청자가 눌렀는지. viewerParam은 요청자 uuid 파라미터 자리($4 등), 비로그인이면 null이라 false가 된다.
+const likeColumnsSql = (viewerParam) => `
+       (SELECT COUNT(*) FROM comment_likes l WHERE l.comment_id = c.id) AS like_count,
+       EXISTS (SELECT 1 FROM comment_likes l WHERE l.comment_id = c.id AND l.user_id = ${viewerParam}::uuid) AS liked_by_me`;
+
 const toComments = (rows, viewerId) => rows.map((row) => maskComment(row, viewerId));
 
 // 책별 원댓글 목록 (최신순, id 커서). 숨김·삭제 표시는 viewerId 기준으로 마스킹한다.
@@ -145,7 +154,7 @@ const toComments = (rows, viewerId) => rows.map((row) => maskComment(row, viewer
 // 반환: { data, total, topLevelTotal, nextCursor }
 const listComments = async (pool, { isbn, limit, before = null, viewerId = null }) => {
   const listQuery = `
-    SELECT ${COMMENT_COLUMNS}, ${REPLY_COUNT_SQL} AS reply_count
+    SELECT ${COMMENT_COLUMNS}, ${REPLY_COUNT_SQL} AS reply_count, ${likeColumnsSql('$4')}
       FROM comments c
       JOIN users u ON u.id = c.user_id
      WHERE c.isbn = $1 AND ${VISIBLE_ROOT_SQL}
@@ -160,7 +169,7 @@ const listComments = async (pool, { isbn, limit, before = null, viewerId = null 
 
   // 다음 페이지가 있는지 알기 위해 1개 더 가져온다
   const [listResult, countResult] = await Promise.all([
-    pool.query(listQuery, [isbn, before, limit + 1]),
+    pool.query(listQuery, [isbn, before, limit + 1, viewerId === undefined ? null : viewerId]),
     pool.query(countQuery, [isbn]),
   ]);
 
@@ -184,7 +193,7 @@ const listReplies = async (pool, { id, limit, after = null, viewerId = null }) =
   if (parent.rowCount === 0) return { result: 'not_found' };
 
   const listQuery = `
-    SELECT ${COMMENT_COLUMNS}, 0 AS reply_count
+    SELECT ${COMMENT_COLUMNS}, 0 AS reply_count, ${likeColumnsSql('$4')}
       FROM comments c
       JOIN users u ON u.id = c.user_id
      WHERE c.parent_id = $1 AND ($2::bigint IS NULL OR c.id > $2::bigint)
@@ -193,7 +202,7 @@ const listReplies = async (pool, { id, limit, after = null, viewerId = null }) =
   const countQuery = 'SELECT COUNT(*) AS total FROM comments WHERE parent_id = $1';
 
   const [listResult, countResult] = await Promise.all([
-    pool.query(listQuery, [id, after, limit + 1]),
+    pool.query(listQuery, [id, after, limit + 1, viewerId === undefined ? null : viewerId]),
     pool.query(countQuery, [id]),
   ]);
 
@@ -211,7 +220,9 @@ const listReplies = async (pool, { id, limit, after = null, viewerId = null }) =
 
 // 작성 직후 응답용 SELECT (닉네임을 붙인다)
 const RETURNING_COLUMNS = 'id, isbn, user_id, content, created_at, parent_id, is_spoiler, is_hidden, deleted_at';
-const JOIN_NICKNAME_SQL = `SELECT i.*, u.nickname, u.profile_image_updated_at, 0 AS reply_count
+// 새 댓글이라 하트는 0개, 내가 누른 것도 없다
+const JOIN_NICKNAME_SQL = `SELECT i.*, u.nickname, u.profile_image_updated_at, 0 AS reply_count,
+               0 AS like_count, false AS liked_by_me
         FROM inserted i
         JOIN users u ON u.id = i.user_id`;
 
@@ -292,7 +303,9 @@ const setHidden = async (pool, { userId, id, isHidden }) => {
         RETURNING ${RETURNING_COLUMNS}
      )
      SELECT i.*, u.nickname, u.profile_image_updated_at,
-            (SELECT COUNT(*) FROM comments r WHERE r.parent_id = i.id) AS reply_count
+            (SELECT COUNT(*) FROM comments r WHERE r.parent_id = i.id) AS reply_count,
+            (SELECT COUNT(*) FROM comment_likes l WHERE l.comment_id = i.id) AS like_count,
+            false AS liked_by_me
        FROM updated i
        JOIN users u ON u.id = i.user_id`,
     [id, userId, isHidden]
@@ -333,6 +346,105 @@ const deleteComment = async (pool, { userId, id }) => {
   if (toCount(row.marked) > 0) return { result: 'ok', mode: 'marked' };
   if (toCount(row.removed) > 0) return { result: 'ok', mode: 'removed' };
   return { result: 'not_found' };
+};
+
+// ---- 하트 ----
+
+// 하트 응답용 댓글 상태: 작성자, 숨김, 삭제 표시, 하트 수, 내가 눌렀는지. 없는 댓글이면 행이 없다.
+const likeStateQuery = (pool, id, userId) => pool.query(
+  `SELECT c.user_id, c.is_hidden, c.deleted_at,
+          (SELECT COUNT(*) FROM comment_likes l WHERE l.comment_id = c.id) AS like_count,
+          EXISTS (SELECT 1 FROM comment_likes l WHERE l.comment_id = c.id AND l.user_id = $2::uuid) AS liked_by_me
+     FROM comments c
+    WHERE c.id = $1::bigint`,
+  [id, userId]
+);
+
+// 댓글에 하트를 누른다. 이미 눌렀어도 ok (멱등).
+// 하트 가능: 삭제 표시가 아니고, 본인 댓글이 아니고, 숨김이 아닌 댓글
+// 반환: { result: 'ok', data: { comment_id, like_count, liked_by_me } }
+//     | { result: 'not_found' }    (없음, 삭제 표시, 숨김 댓글)
+//     | { result: 'own_comment' }  (본인 댓글)
+// 확인 순서: 없음·삭제 > 본인 > 숨김. (같은 문장 안의 CTE는 방금 넣은 행을 세지 못해서 INSERT 뒤에 따로 조회한다)
+const likeComment = async (pool, { userId, id }) => {
+  try {
+    await pool.query(
+      `INSERT INTO comment_likes (comment_id, user_id)
+       SELECT c.id, $2::uuid
+         FROM comments c
+        WHERE c.id = $1::bigint AND c.deleted_at IS NULL AND c.user_id <> $2::uuid AND NOT c.is_hidden
+       ON CONFLICT (comment_id, user_id) DO NOTHING`,
+      [id, userId]
+    );
+  } catch (error) {
+    // 확인과 쓰기 사이에 댓글이 지워진 경우(FK)
+    if (error && error.code === '23503') return { result: 'not_found' };
+    throw error;
+  }
+
+  const state = await likeStateQuery(pool, id, userId);
+  const comment = state.rows[0];
+  if (!comment || comment.deleted_at) return { result: 'not_found' };
+  if (String(comment.user_id) === String(userId)) return { result: 'own_comment' };
+  if (comment.is_hidden) return { result: 'not_found' };
+  return {
+    result: 'ok',
+    data: { comment_id: String(id), like_count: toCount(comment.like_count), liked_by_me: comment.liked_by_me === true },
+  };
+};
+
+// 하트를 취소한다. 누른 적이 없어도 ok (멱등). 본인 댓글·숨김 댓글에도 허용한다.
+// 반환: { result: 'ok', data: { comment_id, like_count, liked_by_me } } | { result: 'not_found' } (없음, 삭제 표시)
+const unlikeComment = async (pool, { userId, id }) => {
+  await pool.query(
+    `DELETE FROM comment_likes l
+      USING comments c
+      WHERE c.id = l.comment_id AND l.comment_id = $1::bigint AND l.user_id = $2::uuid AND c.deleted_at IS NULL`,
+    [id, userId]
+  );
+
+  const state = await likeStateQuery(pool, id, userId);
+  const comment = state.rows[0];
+  if (!comment || comment.deleted_at) return { result: 'not_found' };
+  return {
+    result: 'ok',
+    data: { comment_id: String(id), like_count: toCount(comment.like_count), liked_by_me: comment.liked_by_me === true },
+  };
+};
+
+// ---- 신고 ----
+
+// 댓글을 신고한다. 저장만 하고 숨김·삭제는 하지 않는다. 숨김 댓글도 신고할 수 있다.
+// 반환: { result: 'ok' }
+//     | { result: 'not_found' }         (없음, 삭제 표시)
+//     | { result: 'own_comment' }       (본인 댓글)
+//     | { result: 'already_reported' }  (같은 사용자가 이미 신고함)
+// 신고자·detail은 반환하지 않고 로그도 남기지 않는다.
+const reportComment = async (pool, { userId, id, reason, detail = null }) => {
+  let inserted;
+  try {
+    inserted = await pool.query(
+      `INSERT INTO comment_reports (comment_id, reporter_id, reason, detail)
+       SELECT c.id, $2::uuid, $3::text, $4::text
+         FROM comments c
+        WHERE c.id = $1::bigint AND c.deleted_at IS NULL AND c.user_id <> $2::uuid
+       ON CONFLICT (comment_id, reporter_id) DO NOTHING
+       RETURNING id`,
+      [id, userId, reason, detail]
+    );
+  } catch (error) {
+    // 확인과 쓰기 사이에 댓글이 지워진 경우(FK)
+    if (error && error.code === '23503') return { result: 'not_found' };
+    throw error;
+  }
+  if (inserted.rowCount > 0) return { result: 'ok' };
+
+  // 0행: 이유를 구분한다. 우선순위: 없음·삭제 > 본인 > 이미 신고
+  const found = await pool.query('SELECT user_id, deleted_at FROM comments WHERE id = $1::bigint', [id]);
+  const comment = found.rows[0];
+  if (!comment || comment.deleted_at) return { result: 'not_found' };
+  if (String(comment.user_id) === String(userId)) return { result: 'own_comment' };
+  return { result: 'already_reported' };
 };
 
 // ---- AI 댓글 요약 입력 ----
@@ -406,5 +518,8 @@ module.exports = {
   createComment,
   setHidden,
   deleteComment,
+  likeComment,
+  unlikeComment,
+  reportComment,
   listCommentsForSummary,
 };
