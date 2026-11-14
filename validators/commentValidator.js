@@ -4,6 +4,8 @@ const CONTENT_MIN_LENGTH = 1;
 const CONTENT_MAX_LENGTH = 500;
 const LIST_DEFAULT_LIMIT = 20;
 const LIST_MAX_LIMIT = 50;
+const REPORT_REASONS = ['spam', 'abuse', 'spoiler', 'other']; // DB CHECK(comment_reports_reason_check)와 같아야 한다
+const REPORT_DETAIL_MAX_LENGTH = 200;
 
 const ISBN13_PATTERN = /^97[89][0-9]{10}$/;
 const POSITIVE_INTEGER_PATTERN = /^[1-9][0-9]*$/;
@@ -131,7 +133,35 @@ const validateHiddenBody = (body) => {
   return { ok: true, value: { isHidden } };
 };
 
+// 신고 body 검증. reason은 REPORT_REASONS 중 하나(필수), detail은 선택(없음·null·문자열, trim 후 200자 이하).
+// detail이 비어 있으면 null. 통과하면 { ok: true, value: { reason, detail } }
+// 오류 메시지에는 입력값을 넣지 않는다. (detail 원문 보호)
+const validateReportBody = (body) => {
+  const { reason, detail: rawDetail } = body || {};
+
+  if (typeof reason !== 'string' || !REPORT_REASONS.includes(reason)) {
+    return fail('신고 사유(reason)가 올바르지 않습니다.');
+  }
+
+  let detail = null;
+  if (rawDetail !== undefined && rawDetail !== null) {
+    if (typeof rawDetail !== 'string') {
+      return fail('신고 상세(detail)는 문자열이어야 합니다.');
+    }
+    const trimmed = rawDetail.trim();
+    if (charLength(trimmed) > REPORT_DETAIL_MAX_LENGTH) {
+      return fail(`신고 상세는 ${REPORT_DETAIL_MAX_LENGTH}자 이하로 입력해 주세요.`);
+    }
+    detail = trimmed === '' ? null : trimmed;
+  }
+
+  return { ok: true, value: { reason, detail } };
+};
+
 module.exports = {
+  REPORT_REASONS,
+  REPORT_DETAIL_MAX_LENGTH,
+  validateReportBody,
   CONTENT_MAX_LENGTH,
   LIST_DEFAULT_LIMIT,
   LIST_MAX_LIMIT,

@@ -73,9 +73,12 @@ test('GET 목록: 토큰 없이 200, 기존 필드와 새 필드가 모두 있�
   assert.equal(body.nextCursor, null);
   const item = body.data[0];
   for (const key of ['id', 'isbn', 'user_id', 'content', 'created_at', 'nickname']) assert.ok(key in item, key); // 기존 필드
-  for (const key of ['parent_id', 'is_spoiler', 'is_hidden', 'is_deleted', 'content_masked', 'is_mine', 'reply_count']) {
+  for (const key of ['parent_id', 'is_spoiler', 'is_hidden', 'is_deleted', 'content_masked', 'is_mine', 'reply_count',
+    'like_count', 'liked_by_me']) {
     assert.ok(key in item, key); // 새 필드
   }
+  assert.equal(item.like_count, 0);
+  assert.equal(item.liked_by_me, false);
   assert.equal(item.reply_count, 2);
   assert.equal(item.is_mine, false);
 });
