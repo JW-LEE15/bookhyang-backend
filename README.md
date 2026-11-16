@@ -13,33 +13,25 @@
 - **External API**: Kakao Book Search API (도서 검색, 소개글), Google Gemini API (AI 추천·댓글 요약·독서 리포트)
 - **그 밖의 라이브러리**: axios, cors, dotenv, csv-parse (수집·import 스크립트용). `es-hangul`은 의존성에 있지만 현재 코드에서는 쓰지 않습니다.
 
-### 📁 Project Structure
-- `app.js`: Express 서버 메인 엔트리포인트 (라우터 마운트, CORS, trust proxy 설정)
-- `db.js`: PostgreSQL(Supabase)에 `pg`로 직접 연결하는 설정
-- `config/`: `auth.js` (JWT 발급·검증), `trustProxy.js` (`TRUST_PROXY_HOPS` 해석)
-- `routes/`: API 라우터
-  - `books.js`: 도서 검색, 모음집 목록·상세·소개글·관련 책
-  - `userBooks.js`: 내 서재 도서 목록·담기·삭제·독서 상태 변경
-  - `readingRecords.js`: 독서 기록 요약, 완독일 수정, 책별 메모
-  - `auth.js`: 회원가입, 로그인, 닉네임 수정
-  - `profileImage.js`: 내 프로필 사진 올리기·지우기
-  - `users.js`: 프로필 사진 조회 (공개)
-  - `comments.js`: 책별 댓글, 답글, 숨김, 삭제, 하트, 신고
-  - `ai.js`: AI 추천, 댓글 요약, 독서 리포트 생성
-  - `readingReports.js`: 저장된 AI 독서 리포트 목록·삭제
-- `middleware/`: 인증과 횟수 제한 (`requireAuth.js`, `optionalAuth.js`, `rateLimiters.js`, `nicknameLimiter.js`, `profileImageLimiter.js`, `bookLimiters.js`, `commentLimiters.js`, `aiLimiters.js`)
-- `validators/`: 요청 검증 (`authValidator.js`, `bookValidator.js`, `commentValidator.js`, `readingValidator.js`, `profileImageValidator.js`, `aiValidator.js`)
-- `services/`: 비즈니스 로직
-  - `kakaoBook.js`, `kakaoDescription.js`: 카카오 도서 검색, 책 소개글
-  - `booksCatalog.js`, `isbn.js`: 모음집 조회, ISBN 처리
-  - `comments.js`, `commentSummary.js`: 댓글 로직, AI 댓글 요약
-  - `readingRecords.js`, `readingReport.js`, `readingReportStore.js`, `kstDate.js`: 독서 기록, AI 독서 리포트 생성·저장, 한국 시간 기간 계산
-  - `recommendation.js`: AI 독서 추천
-  - `profileImage.js`, `safeError.js`: 프로필 사진 처리, 로그용 오류 요약
-  - `ai/`: 공통 AI 모듈 (`index.js`, `geminiProvider.js`, `usageGuard.js`, `cache.js`, `errors.js`)
-- `sql/`: Supabase SQL Editor에서 직접 실행하는 SQL (적용·롤백 쌍)
-- `scripts/`: 모음집 책 수집·import 스크립트와 수동 확인용 스크립트. 사용법은 [scripts/README.md](scripts/README.md)를 참고합니다.
-- `test/`: `node --test` 테스트
+## 📁 프로젝트 구조
+
+```
+bookhyang-backend/
+├── config/        # JWT, 프록시 설정
+├── middleware/    # 인증, 호출 횟수 제한
+├── routes/        # API 엔드포인트
+├── services/      # 비즈니스 로직, DB 쿼리, 외부 API
+│   └── ai/        # AI 공통 모듈(Gemini)
+├── validators/    # 요청 입력 검증
+├── sql/           # DB 마이그레이션(적용·롤백)
+├── test/          # 단위·라우트 테스트
+├── scripts/       # 도서 수집·적재, 수동 확인용 스크립트
+├── app.js         # 서버 진입점
+├── db.js          # DB 연결
+├── package.json
+├── .env.example
+└── README.md
+```
 
 ---
 
